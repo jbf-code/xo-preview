@@ -367,6 +367,17 @@ app.get('/preview/:id', async (req, res) => {
 });
 
 // ── Routes: Delete preview ────────────────────────────────────────────────────
+app.get('/delete/:id/confirm', requireAuth, (req, res) => {
+  const preview = db.getPreview(req.params.id);
+  if (!preview) return res.redirect('/');
+  res.send(renderPage('confirm-delete', {
+    name: preview.name,
+    type: 'preview',
+    deleteUrl: `/delete/${preview.id}`,
+    cancelUrl: '/',
+  }, req));
+});
+
 app.post('/delete/:id', requireAuth, (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (preview) {
@@ -1009,6 +1020,17 @@ app.get('/hosting/pixel/:campaignId/:formatId', (req, res) => {
   } catch (_) {}
   res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-cache, no-store', 'Expires': '0' });
   res.send(PIXEL_GIF);
+});
+
+app.get('/hosting/delete/:id/confirm', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.redirect('/hosting');
+  res.send(renderPage('confirm-delete', {
+    name: campaign.name,
+    type: 'hosting',
+    deleteUrl: `/hosting/delete/${campaign.id}`,
+    cancelUrl: `/hosting/${campaign.id}`,
+  }, req));
 });
 
 app.post('/hosting/delete/:id', requireAuth, async (req, res) => {
