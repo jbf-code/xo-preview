@@ -373,6 +373,7 @@ app.post('/delete/:id', requireAuth, (req, res) => {
     const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
     if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
     db.deletePreview(req.params.id);
+    console.log(`[preview] Deleted: ${preview.name} (${preview.id}) by ${req.session.user?.email}`);
   }
   res.redirect('/');
 });
