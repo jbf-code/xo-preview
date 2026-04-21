@@ -143,26 +143,13 @@ app.post('/new', requireAuth, async (req, res) => {
     console.log(`[${id}] Starting banner extraction from: ${url}`);
     const result = await extractBanners(url);
 
-    // Generate HTML
-    const html = generatePreviewHtml({
-      id,
-      campaignName: campaignName,
-      clientName: '',
-      banners: result.banners,
-      zuuviUrl: url,
-    });
-
-    // Save HTML to disk
-    const previewDir = PREVIEWS_DIR;
-    if (!fs.existsSync(previewDir)) fs.mkdirSync(previewDir, { recursive: true });
-    fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
-
-    // Update DB
+    // Save banner data as JSON for dynamic rendering
     db.updatePreview(id, {
       name: campaignName,
       status: 'ready',
       banner_count: result.banners.length,
       live_count: result.banners.filter(b => b.html && b.html.length > 100).length,
+      banners_json: JSON.stringify(result.banners),
     });
 
     console.log(`[${id}] Preview ready: ${result.banners.length} banners`);
@@ -222,23 +209,12 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
     console.log(`[${id}] Re-generating from: ${newUrl}`);
     const result = await extractBanners(newUrl);
 
-    const html = generatePreviewHtml({
-      id,
-      campaignName: newName,
-      clientName: '',
-      banners: result.banners,
-      zuuviUrl: newUrl,
-    });
-
-    const previewDir = PREVIEWS_DIR;
-    if (!fs.existsSync(previewDir)) fs.mkdirSync(previewDir, { recursive: true });
-    fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
-
     db.updatePreview(id, {
       name: newName,
       status: 'ready',
       banner_count: result.banners.length,
       live_count: result.banners.filter(b => b.html && b.html.length > 100).length,
+      banners_json: JSON.stringify(result.banners),
     });
 
     console.log(`[${id}] Re-generated: ${result.banners.length} banners`);
@@ -255,14 +231,27 @@ app.get('/preview/:id', (req, res) => {
     return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet eller ikke klar endnu' }, req));
   }
 
-  const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
-  if (!fs.existsSync(htmlPath)) {
-    return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler' }, req));
-  }
-
   // Increment view counter (fire-and-forget)
   try { db.incrementViews(preview.id); } catch (_) {}
 
+  // Dynamic rendering — always uses latest template code
+  if (preview.banners_json) {
+    const banners = JSON.parse(preview.banners_json);
+    const html = generatePreviewHtml({
+      id: preview.id,
+      campaignName: preview.name,
+      clientName: '',
+      banners,
+      zuuviUrl: preview.zuuvi_url,
+    });
+    return res.send(html);
+  }
+
+  // Fallback: serve old static file if banners_json not yet saved
+  const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
+  if (!fs.existsSync(htmlPath)) {
+    return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler — re-generer fra Admin' }, req));
+  }
   res.sendFile(htmlPath);
 });
 
