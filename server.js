@@ -366,12 +366,9 @@ app.post('/hosting/upload', requireAuth, upload.single('zipfile'), async (req, r
       let width = 0, height = 0;
       const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
       if (dimMatch) { width = parseInt(dimMatch[1]); height = parseInt(dimMatch[2]); }
-      // Insert format first to get ID, then update tag with tracking pixel
-      const insertResult = db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: '', size_bytes: pkgSize, file_count: pkg.files.length });
-      const formatId = insertResult.lastInsertRowid;
-      const pixelUrl = `${BASE_URL}/hosting/pixel/${id}/${formatId}`;
-      const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe><img src="${pixelUrl}" width="1" height="1" style="display:none" alt="">`;
-      db.updateHostedFormatTag(formatId, tag);
+      // Clean GAM tag — no external tracking pixels (ad servers reject foreign URLs)
+      const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe>`;
+      db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: tag, size_bytes: pkgSize, file_count: pkg.files.length });
     }
 
     db.updateHosted(id, { status: 'ready', total_size_bytes: totalSizeBytes, format_count: formatPackages.length });
@@ -389,8 +386,8 @@ app.get('/hosting/:id', requireAuth, (req, res) => {
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
 
-// Tracking pixel — embed in banner tags to count impressions
-// Usage: <img src="https://studio.xo.dk/hosting/pixel/:campaignId/:formatId" width="1" height="1" style="display:none">
+// Internal tracking pixel — NOT included in GAM tags (ad servers reject foreign URLs)
+// Can be used manually for internal tracking: /hosting/pixel/:campaignId/:formatId
 const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
 app.get('/hosting/pixel/:campaignId/:formatId', (req, res) => {
   try {
