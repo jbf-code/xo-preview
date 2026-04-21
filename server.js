@@ -84,7 +84,7 @@ function getUsers() {
 // ── Routes: Auth ──────────────────────────────────────────────────────────────
 app.get('/login', (req, res) => {
   if (req.session.user) return res.redirect('/');
-  res.send(renderPage('login', { error: null }));
+  res.send(renderPage('login', { error: null }, req));
 });
 
 app.post('/login', (req, res) => {
@@ -93,7 +93,7 @@ app.post('/login', (req, res) => {
   const user = users.find(u => u.email.toLowerCase() === (email || '').toLowerCase());
 
   if (!user || user.password !== password) {
-    return res.send(renderPage('login', { error: 'Forkert email eller password' }));
+    return res.send(renderPage('login', { error: 'Forkert email eller password' }, req));
   }
 
   req.session.user = { email: user.email, name: user.name };
@@ -108,19 +108,19 @@ app.get('/logout', (req, res) => {
 // ── Routes: Dashboard ─────────────────────────────────────────────────────────
 app.get('/', requireAuth, (req, res) => {
   const previews = db.getAllPreviews();
-  res.send(renderPage('dashboard', { previews }));
+  res.send(renderPage('dashboard', { previews }, req));
 });
 
 // ── Routes: Create preview ────────────────────────────────────────────────────
 app.get('/new', requireAuth, (req, res) => {
-  res.send(renderPage('new', { error: null }));
+  res.send(renderPage('new', { error: null }, req));
 });
 
 app.post('/new', requireAuth, async (req, res) => {
   const { url, name } = req.body;
 
   if (!url || !url.includes('zuuvi')) {
-    return res.send(renderPage('new', { error: 'Indtast en gyldig Zuuvi URL' }));
+    return res.send(renderPage('new', { error: 'Indtast en gyldig Zuuvi URL' }, req));
   }
 
   const id = uuidv4().slice(0, 8);
@@ -175,12 +175,12 @@ app.post('/new', requireAuth, async (req, res) => {
 // ── Routes: Generating status (poll endpoint) ─────────────────────────────────
 app.get('/generating/:id', requireAuth, (req, res) => {
   const preview = db.getPreview(req.params.id);
-  if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }));
+  if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }, req));
 
   if (preview.status === 'ready') return res.redirect(`/preview/${preview.id}`);
-  if (preview.status === 'error') return res.send(renderPage('error', { message: `Fejl: ${preview.error_msg}` }));
+  if (preview.status === 'error') return res.send(renderPage('error', { message: `Fejl: ${preview.error_msg}` }, req));
 
-  res.send(renderPage('generating', { preview }));
+  res.send(renderPage('generating', { preview }, req));
 });
 
 app.get('/api/status/:id', requireAuth, (req, res) => {
@@ -192,13 +192,13 @@ app.get('/api/status/:id', requireAuth, (req, res) => {
 // ── Routes: Admin dashboard ─────────────────────────────────────────────────────
 app.get('/admin', requireAuth, (req, res) => {
   const previews = db.getAllPreviews();
-  res.send(renderPage('admin', { previews }));
+  res.send(renderPage('admin', { previews }, req));
 });
 
 // ── Routes: Edit / Re-generate preview ───────────────────────────────────────────
 app.post('/edit/:id', requireAuth, async (req, res) => {
   const preview = db.getPreview(req.params.id);
-  if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }));
+  if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }, req));
 
   const newUrl = (req.body.url || '').trim() || preview.zuuvi_url;
   const newName = (req.body.name || '').trim() || preview.name;
@@ -252,12 +252,12 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
 app.get('/preview/:id', (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (!preview || preview.status !== 'ready') {
-    return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet eller ikke klar endnu' }));
+    return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet eller ikke klar endnu' }, req));
   }
 
   const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
   if (!fs.existsSync(htmlPath)) {
-    return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler' }));
+    return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler' }, req));
   }
 
   // Increment view counter (fire-and-forget)
@@ -278,9 +278,10 @@ app.post('/delete/:id', requireAuth, (req, res) => {
 });
 
 // ── Page renderer ─────────────────────────────────────────────────────────────
-function renderPage(page, data = {}) {
+function renderPage(page, data = {}, req) {
   const pages = require('./lib/pages');
-  return pages[page](data, { user: data.user || null, baseUrl: BASE_URL });
+  const user = req.session.user || null;
+  return pages[page](data, { user, baseUrl: BASE_URL });
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
