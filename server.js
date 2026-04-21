@@ -257,6 +257,12 @@ app.get('/admin', requireAuth, (req, res) => {
 });
 
 // ── Routes: Edit / Re-generate preview ───────────────────────────────────────────
+app.get('/edit/:id', requireAuth, (req, res) => {
+  const preview = db.getPreview(req.params.id);
+  if (!preview) return res.redirect('/');
+  res.send(renderPage('edit-preview', { preview }, req));
+});
+
 app.post('/edit/:id', requireAuth, async (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }, req));
