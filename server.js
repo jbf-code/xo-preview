@@ -274,26 +274,10 @@ app.get('/preview/:id', async (req, res) => {
   // Increment view counter (fire-and-forget)
   try { db.incrementViews(preview.id); } catch (_) {}
 
-  // Live re-fetch from Zuuvi source on every pageload
-  try {
-    const freshData = await extractBanners(preview.zuuvi_url);
-    if (freshData && freshData.banners && freshData.banners.length > 0) {
-      // Update DB with fresh data (fire-and-forget)
-      try { db.updateBannersJson(preview.id, JSON.stringify(freshData.banners)); } catch (_) {}
-      const html = generatePreviewHtml({
-        id: preview.id,
-        campaignName: preview.name,
-        clientName: '',
-        banners: freshData.banners,
-        zuuviUrl: preview.zuuvi_url,
-      });
-      return res.send(html);
-    }
-  } catch (err) {
-    console.log(`[preview:${preview.id}] Live fetch failed, using cached: ${err.message}`);
-  }
+  // Serve cached version immediately, refresh in background if stale (>5 min)
+  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  const isStale = !preview.updated_at || (Date.now() - new Date(preview.updated_at).getTime()) > CACHE_TTL_MS;
 
-  // Fallback to cached banners_json if live fetch fails
   if (preview.banners_json) {
     const banners = JSON.parse(preview.banners_json);
     const html = generatePreviewHtml({
@@ -303,7 +287,18 @@ app.get('/preview/:id', async (req, res) => {
       banners,
       zuuviUrl: preview.zuuvi_url,
     });
-    return res.send(html);
+    res.send(html);
+
+    // Background refresh if stale (non-blocking, user doesn't wait)
+    if (isStale) {
+      extractBanners(preview.zuuvi_url).then(freshData => {
+        if (freshData?.banners?.length > 0) {
+          db.updateBannersJson(preview.id, JSON.stringify(freshData.banners));
+          console.log(`[preview:${preview.id}] Background refresh OK (${freshData.banners.length} banners)`);
+        }
+      }).catch(err => console.log(`[preview:${preview.id}] Background refresh failed: ${err.message}`));
+    }
+    return;
   }
 
   // Fallback: serve old static file if banners_json not yet saved
