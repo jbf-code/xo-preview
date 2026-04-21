@@ -357,18 +357,25 @@ app.post('/hosting/upload', requireAuth, upload.single('zipfile'), async (req, r
       return;
     }
 
+    let totalSizeBytes = 0;
     for (const pkg of formatPackages) {
-      console.log(`[hosting:${id}] Uploading format: ${pkg.formatName} (${pkg.files.length} files)`);
+      const pkgSize = pkg.files.reduce((sum, f) => sum + f.buffer.length, 0);
+      totalSizeBytes += pkgSize;
+      console.log(`[hosting:${id}] Uploading format: ${pkg.formatName} (${pkg.files.length} files, ${(pkgSize / 1024).toFixed(0)} KB)`);
       const { indexUrl, prefix } = await r2.uploadBannerPackage(id, pkg.formatName, pkg.files);
       let width = 0, height = 0;
       const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
       if (dimMatch) { width = parseInt(dimMatch[1]); height = parseInt(dimMatch[2]); }
-      const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe>`;
-      db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: tag });
+      // Insert format first to get ID, then update tag with tracking pixel
+      const insertResult = db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: '', size_bytes: pkgSize, file_count: pkg.files.length });
+      const formatId = insertResult.lastInsertRowid;
+      const pixelUrl = `${BASE_URL}/hosting/pixel/${id}/${formatId}`;
+      const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe><img src="${pixelUrl}" width="1" height="1" style="display:none" alt="">`;
+      db.updateHostedFormatTag(formatId, tag);
     }
 
-    db.updateHosted(id, { status: 'ready' });
-    console.log(`[hosting:${id}] Ready: ${formatPackages.length} formats uploaded`);
+    db.updateHosted(id, { status: 'ready', total_size_bytes: totalSizeBytes, format_count: formatPackages.length });
+    console.log(`[hosting:${id}] Ready: ${formatPackages.length} formats, ${(totalSizeBytes / 1024 / 1024).toFixed(1)} MB total`);
   } catch (err) {
     console.error(`[hosting:${id}] Error:`, err.message);
     db.updateHosted(id, { status: 'error', error_msg: err.message });
@@ -380,6 +387,18 @@ app.get('/hosting/:id', requireAuth, (req, res) => {
   if (!campaign) return res.status(404).send(renderPage('error', { message: 'Hosted campaign not found' }, req));
   const formats = db.getHostedFormats(req.params.id);
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
+});
+
+// Tracking pixel — embed in banner tags to count impressions
+// Usage: <img src="https://studio.xo.dk/hosting/pixel/:campaignId/:formatId" width="1" height="1" style="display:none">
+const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
+app.get('/hosting/pixel/:campaignId/:formatId', (req, res) => {
+  try {
+    db.incrementFormatViews(parseInt(req.params.formatId));
+    db.incrementHostedViews(req.params.campaignId);
+  } catch (_) {}
+  res.set({ 'Content-Type': 'image/gif', 'Cache-Control': 'no-cache, no-store', 'Expires': '0' });
+  res.send(PIXEL_GIF);
 });
 
 app.post('/hosting/delete/:id', requireAuth, async (req, res) => {
