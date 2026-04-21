@@ -274,10 +274,33 @@ app.get('/preview/:id', async (req, res) => {
   // Increment view counter (fire-and-forget)
   try { db.incrementViews(preview.id); } catch (_) {}
 
-  // Serve cached version immediately, refresh in background if stale (>5 min)
-  const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+  // Force refresh: ?refresh=1 or auto-refresh if stale (>60s)
+  const forceRefresh = req.query.refresh === '1';
+  const CACHE_TTL_MS = 60 * 1000; // 1 minute
   const isStale = !preview.updated_at || (Date.now() - new Date(preview.updated_at).getTime()) > CACHE_TTL_MS;
 
+  // If force refresh OR no cached data, fetch synchronously
+  if (forceRefresh || !preview.banners_json) {
+    try {
+      const freshData = await extractBanners(preview.zuuvi_url);
+      if (freshData?.banners?.length > 0) {
+        db.updateBannersJson(preview.id, JSON.stringify(freshData.banners));
+        const html = generatePreviewHtml({
+          id: preview.id,
+          campaignName: preview.name,
+          clientName: '',
+          banners: freshData.banners,
+          zuuviUrl: preview.zuuvi_url,
+        });
+        return res.send(html);
+      }
+    } catch (err) {
+      console.log(`[preview:${preview.id}] Refresh failed: ${err.message}`);
+      // Fall through to cached version
+    }
+  }
+
+  // Serve cached version instantly
   if (preview.banners_json) {
     const banners = JSON.parse(preview.banners_json);
     const html = generatePreviewHtml({
@@ -289,14 +312,14 @@ app.get('/preview/:id', async (req, res) => {
     });
     res.send(html);
 
-    // Background refresh if stale (non-blocking, user doesn't wait)
+    // Background refresh if stale (user doesn't wait)
     if (isStale) {
       extractBanners(preview.zuuvi_url).then(freshData => {
         if (freshData?.banners?.length > 0) {
           db.updateBannersJson(preview.id, JSON.stringify(freshData.banners));
-          console.log(`[preview:${preview.id}] Background refresh OK (${freshData.banners.length} banners)`);
+          console.log(`[preview:${preview.id}] Background refresh OK`);
         }
-      }).catch(err => console.log(`[preview:${preview.id}] Background refresh failed: ${err.message}`));
+      }).catch(() => {});
     }
     return;
   }
