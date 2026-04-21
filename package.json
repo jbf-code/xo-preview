@@ -1,7 +1,7 @@
 {
-  "name": "xo-preview",
+  "name": "xo-studio",
   "version": "1.0.0",
-  "description": "XO-branded Zuuvi campaign preview platform",
+  "description": "XO Studio — Campaign preview platform",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
