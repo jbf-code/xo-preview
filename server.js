@@ -12,6 +12,7 @@ const { v4: uuidv4 } = require('uuid');
 const db = require('./lib/db');
 const { extractBanners } = require('./lib/extractor');
 const { generatePreviewHtml } = require('./lib/renderer');
+const analytics = require('./lib/analytics');
 const fs = require('fs');
 
 const app = express();
@@ -281,8 +282,15 @@ const r2 = require('./lib/r2');
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
-app.get('/hosting', requireAuth, (req, res) => {
+app.get('/hosting', requireAuth, async (req, res) => {
   const campaigns = db.getAllHosted();
+  const cdnStats = await analytics.getCampaignStats();
+  // Merge CDN stats into campaign data
+  for (const c of campaigns) {
+    const stats = cdnStats[c.id] || {};
+    c.cdn_requests = stats.requests || 0;
+    c.cdn_mb_served = stats.mb_served || 0;
+  }
   res.send(renderPage('hosting', { campaigns }, req));
 });
 
@@ -379,10 +387,19 @@ app.post('/hosting/upload', requireAuth, upload.single('zipfile'), async (req, r
   }
 });
 
-app.get('/hosting/:id', requireAuth, (req, res) => {
+app.get('/hosting/:id', requireAuth, async (req, res) => {
   const campaign = db.getHosted(req.params.id);
   if (!campaign) return res.status(404).send(renderPage('error', { message: 'Hosted campaign not found' }, req));
   const formats = db.getHostedFormats(req.params.id);
+  const formatStats = await analytics.getFormatStats(req.params.id);
+  // Merge CDN stats into format data
+  const statsMap = {};
+  for (const s of formatStats) statsMap[s.format] = s;
+  for (const f of formats) {
+    const s = statsMap[f.format_name] || {};
+    f.cdn_requests = s.requests || 0;
+    f.cdn_mb_served = s.mb_served || 0;
+  }
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
 
