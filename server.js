@@ -20,6 +20,7 @@ const SESSION_SECRET = process.env.SESSION_SECRET || 'xo-preview-dev-secret-chan
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
+app.set('trust proxy', 1);
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -29,10 +30,12 @@ app.use(session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
+  proxy: true,
   cookie: {
     maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     httpOnly: true,
     secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
   }
 }));
 
