@@ -255,7 +255,7 @@ app.get('/preview/:id', (req, res) => {
     return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet eller ikke klar endnu' }));
   }
 
-  const htmlPath = path.join(__dirname, 'previews', `${preview.id}.html`);
+  const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
   if (!fs.existsSync(htmlPath)) {
     return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler' }));
   }
@@ -270,7 +270,7 @@ app.get('/preview/:id', (req, res) => {
 app.post('/delete/:id', requireAuth, (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (preview) {
-    const htmlPath = path.join(__dirname, 'previews', `${preview.id}.html`);
+    const htmlPath = path.join(PREVIEWS_DIR, `${preview.id}.html`);
     if (fs.existsSync(htmlPath)) fs.unlinkSync(htmlPath);
     db.deletePreview(req.params.id);
   }
