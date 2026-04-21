@@ -527,6 +527,406 @@ app.post('/hosting/:campaignId/format/:formatId/click-url', requireAuth, async (
   res.redirect(`/hosting/${campaignId}`);
 });
 
+// ── Routes: Hosting Replace/Update ────────────────────────────────────────────
+
+// Temp storage for upload data between validation and confirmation
+const replaceTempStore = new Map();
+
+// Helper: parse ZIP into format packages (same logic as /hosting/upload)
+function parseZipToFormats(zipBuffer) {
+  const zip = new AdmZip(zipBuffer);
+  const entries = zip.getEntries();
+  const innerZips = entries.filter(e => e.entryName.endsWith('.zip'));
+  const formatPackages = [];
+
+  if (innerZips.length > 0) {
+    for (const innerEntry of innerZips) {
+      const formatName = path.basename(innerEntry.entryName, '.zip');
+      const innerZip = new AdmZip(innerEntry.getData());
+      const files = innerZip.getEntries()
+        .filter(e => !e.isDirectory)
+        .map(e => ({ name: e.entryName, buffer: e.getData() }));
+      formatPackages.push({ formatName, files });
+    }
+  } else {
+    const groups = {};
+    for (const entry of entries) {
+      if (entry.isDirectory) continue;
+      const parts = entry.entryName.split('/');
+      if (parts.some(p => p.startsWith('__') || p.startsWith('.'))) continue;
+      let groupName, fileName;
+      if (parts.length > 1) { groupName = parts[0]; fileName = parts.slice(1).join('/'); }
+      else { groupName = 'default'; fileName = parts[0]; }
+      if (!groups[groupName]) groups[groupName] = [];
+      groups[groupName].push({ name: fileName, buffer: entry.getData() });
+    }
+    const groupNames = Object.keys(groups);
+    if (groupNames.length === 1 && groups[groupNames[0]].some(f => f.name === 'index.html')) {
+      const indexFile = groups[groupNames[0]].find(f => f.name === 'index.html');
+      const html = indexFile.buffer.toString('utf8');
+      const sizeMatch = html.match(/ad\.size["']?\s*content=["']?width=(\d+),\s*height=(\d+)/i);
+      const formatName = sizeMatch ? `${sizeMatch[1]}x${sizeMatch[2]}` : groupNames[0];
+      formatPackages.push({ formatName, files: groups[groupNames[0]] });
+    } else {
+      for (const [groupName, files] of Object.entries(groups)) {
+        if (files.some(f => f.name === 'index.html' || f.name.endsWith('/index.html'))) {
+          formatPackages.push({ formatName: groupName, files });
+        }
+      }
+    }
+  }
+  return formatPackages;
+}
+
+// Helper: parse meta tags from HTML
+function parseMeta(html) {
+  const result = {};
+  const templateMatch = html.match(/<meta[^>]*name=["']?zuuvi-template-id["']?[^>]*content=["']?([^"'\s>]+)/i);
+  if (templateMatch) result.templateId = templateMatch[1];
+  const bannerMatch = html.match(/<meta[^>]*name=["']?zuuvi-banner-id["']?[^>]*content=["']?([^"'\s>]+)/i);
+  if (bannerMatch) result.bannerId = bannerMatch[1];
+  const sizeMatch = html.match(/<meta[^>]*name=["']?ad\.size["']?[^>]*content=["']?width=(\d+),\s*height=(\d+)/i);
+  if (sizeMatch) { result.adWidth = parseInt(sizeMatch[1]); result.adHeight = parseInt(sizeMatch[2]); }
+  return result;
+}
+
+// Helper: extract click URL from HTML
+function parseClickUrl(html) {
+  const ctMatch = html.match(/clickTag\s*=\s*["']([^"']+)["']/);
+  if (ctMatch) return ctMatch[1];
+  const urlMatches = html.match(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts)[^"]+)"/g);
+  if (urlMatches) {
+    for (const m of urlMatches) {
+      const url = m.slice(1, -1);
+      if (!url.match(/\.(js|css|otf|woff|svg|png|jpg|mp4|gif)$/i)) return url;
+    }
+  }
+  return null;
+}
+
+// Campaign-level replace: show form
+app.get('/hosting/:id/replace', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+  res.send(renderPage('hosting-replace', { campaign, format: null, error: null }, req));
+});
+
+// Campaign-level replace: process upload → validate → show confirmation
+app.post('/hosting/:id/replace', requireAuth, upload.single('zipfile'), async (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+  if (!req.file) return res.send(renderPage('hosting-replace', { campaign, format: null, error: 'Upload en ZIP fil.' }, req));
+  if (!r2.isConfigured()) return res.send(renderPage('hosting-replace', { campaign, format: null, error: 'R2 storage ikke konfigureret.' }, req));
+
+  try {
+    const formatPackages = parseZipToFormats(req.file.buffer);
+    if (formatPackages.length === 0) {
+      return res.send(renderPage('hosting-replace', { campaign, format: null, error: 'Ingen gyldige banner formater fundet i ZIP.' }, req));
+    }
+
+    const existingFormats = db.getHostedFormats(req.params.id);
+    const existingNames = existingFormats.map(f => f.format_name);
+    const newNames = formatPackages.map(p => p.formatName);
+
+    const warnings = [];
+    const matchedFormats = [];
+    const newFormats = [];
+    const missingFormats = [];
+
+    // Check format count
+    if (newNames.length !== existingNames.length) {
+      warnings.push(`Antal formater ændret: ${existingNames.length} eksisterende → ${newNames.length} i ny ZIP`);
+    }
+
+    // Categorize formats
+    for (const name of newNames) {
+      if (existingNames.includes(name)) matchedFormats.push(name);
+      else newFormats.push(name);
+    }
+    for (const name of existingNames) {
+      if (!newNames.includes(name)) missingFormats.push(name);
+    }
+
+    // Dimension & meta validation for matched formats
+    const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+    for (const pkg of formatPackages) {
+      const existingFmt = existingFormats.find(f => f.format_name === pkg.formatName);
+      if (!existingFmt) continue;
+
+      const newIndex = pkg.files.find(f => f.name === 'index.html' || f.name.endsWith('/index.html'));
+      if (!newIndex) continue;
+      const newHtml = newIndex.buffer.toString('utf-8');
+      const newMeta = parseMeta(newHtml);
+
+      // Check ad.size vs format dimensions
+      if (newMeta.adWidth && newMeta.adHeight) {
+        if (newMeta.adWidth !== existingFmt.width || newMeta.adHeight !== existingFmt.height) {
+          warnings.push(`${pkg.formatName}: ad.size (${newMeta.adWidth}x${newMeta.adHeight}) matcher ikke eksisterende (${existingFmt.width}x${existingFmt.height})`);
+        }
+      }
+
+      // Fetch old index.html for template/banner ID comparison
+      try {
+        const resp = await fetch(`${cdnBase}/hosted/${campaign.id}/${pkg.formatName}/index.html`);
+        if (resp.ok) {
+          const oldHtml = await resp.text();
+          const oldMeta = parseMeta(oldHtml);
+          if (oldMeta.templateId && newMeta.templateId && oldMeta.templateId !== newMeta.templateId) {
+            warnings.push(`${pkg.formatName}: Denne banner er fra en anden Zuuvi template (${oldMeta.templateId} → ${newMeta.templateId})`);
+          }
+          if (oldMeta.bannerId && newMeta.bannerId && oldMeta.bannerId !== newMeta.bannerId) {
+            warnings.push(`${pkg.formatName}: Banner ID ændret (${oldMeta.bannerId} → ${newMeta.bannerId})`);
+          }
+        }
+      } catch (_) { /* CDN fetch failed, skip comparison */ }
+    }
+
+    // New formats that don't match existing dimensions
+    for (const name of newFormats) {
+      warnings.push(`Nyt format: ${name} findes ikke i den eksisterende kampagne — vil blive tilføjet`);
+    }
+
+    // Store temp data
+    const tempKey = require('crypto').randomUUID();
+    replaceTempStore.set(tempKey, {
+      campaignId: campaign.id,
+      formatPackages,
+      matchedFormats,
+      newFormats,
+      missingFormats,
+      createdAt: Date.now(),
+    });
+    // Auto-clean after 15 min
+    setTimeout(() => replaceTempStore.delete(tempKey), 15 * 60 * 1000);
+
+    res.send(renderPage('hosting-replace-confirm', {
+      campaign, format: null, warnings, newFormats, missingFormats, matchedFormats, tempKey
+    }, req));
+  } catch (err) {
+    console.error(`[hosting:replace] Error:`, err.message);
+    res.send(renderPage('hosting-replace', { campaign, format: null, error: `Fejl: ${err.message}` }, req));
+  }
+});
+
+// Campaign-level replace: execute confirmed replacement
+app.post('/hosting/:id/replace/confirm', requireAuth, async (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+
+  const tempData = replaceTempStore.get(req.body.tempKey);
+  if (!tempData || tempData.campaignId !== campaign.id) {
+    return res.send(renderPage('error', { message: 'Upload-data udløbet. Upload venligst igen.' }, req));
+  }
+  replaceTempStore.delete(req.body.tempKey);
+
+  const existingFormats = db.getHostedFormats(campaign.id);
+
+  try {
+    let totalSizeBytes = 0;
+    let totalFormats = existingFormats.length;
+
+    for (const pkg of tempData.formatPackages) {
+      const pkgSize = pkg.files.reduce((sum, f) => sum + f.buffer.length, 0);
+      totalSizeBytes += pkgSize;
+      const existingFmt = existingFormats.find(f => f.format_name === pkg.formatName);
+
+      // Delete old files and upload new ones
+      console.log(`[hosting:${campaign.id}] Replacing format: ${pkg.formatName}`);
+      await r2.deletePrefix(`hosted/${campaign.id}/${pkg.formatName}/`);
+      const { indexUrl, prefix } = await r2.uploadBannerPackage(campaign.id, pkg.formatName, pkg.files);
+
+      // Parse new click URL
+      let clickUrl = null;
+      const indexFile = pkg.files.find(f => f.name.endsWith('index.html'));
+      if (indexFile) clickUrl = parseClickUrl(indexFile.buffer.toString('utf-8'));
+
+      // Parse dimensions
+      let width = 0, height = 0;
+      const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
+      if (dimMatch) { width = parseInt(dimMatch[1]); height = parseInt(dimMatch[2]); }
+
+      if (existingFmt) {
+        // Update existing format
+        db.updateHostedFormat(existingFmt.id, {
+          size_bytes: pkgSize,
+          file_count: pkg.files.length,
+          click_url: clickUrl,
+        });
+      } else {
+        // Add new format
+        const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe>`;
+        db.addHostedFormat({
+          campaign_id: campaign.id,
+          format_name: pkg.formatName,
+          width, height,
+          r2_prefix: prefix,
+          cdn_url: indexUrl,
+          tag_html: tag,
+          size_bytes: pkgSize,
+          file_count: pkg.files.length,
+          click_url: clickUrl,
+        });
+        totalFormats++;
+      }
+    }
+
+    // Add back size of non-replaced formats
+    for (const ef of existingFormats) {
+      if (!tempData.formatPackages.find(p => p.formatName === ef.format_name)) {
+        totalSizeBytes += ef.size_bytes || 0;
+      }
+    }
+
+    db.updateHosted(campaign.id, {
+      total_size_bytes: totalSizeBytes,
+      format_count: totalFormats,
+      status: 'ready',
+    });
+
+    console.log(`[hosting:${campaign.id}] Campaign replace done: ${tempData.formatPackages.length} formats replaced`);
+    res.redirect(`/hosting/${campaign.id}`);
+  } catch (err) {
+    console.error(`[hosting:${campaign.id}] Replace error:`, err.message);
+    res.send(renderPage('error', { message: `Fejl under opdatering: ${err.message}` }, req));
+  }
+});
+
+// Format-level replace: show form
+app.get('/hosting/:id/format/:formatId/replace', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+  const format = db.getHostedFormat(parseInt(req.params.formatId));
+  if (!format || format.campaign_id !== campaign.id) return res.status(404).send(renderPage('error', { message: 'Format ikke fundet' }, req));
+  res.send(renderPage('hosting-replace', { campaign, format, error: null }, req));
+});
+
+// Format-level replace: process upload → validate → show confirmation
+app.post('/hosting/:id/format/:formatId/replace', requireAuth, upload.single('zipfile'), async (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+  const format = db.getHostedFormat(parseInt(req.params.formatId));
+  if (!format || format.campaign_id !== campaign.id) return res.status(404).send(renderPage('error', { message: 'Format ikke fundet' }, req));
+  if (!req.file) return res.send(renderPage('hosting-replace', { campaign, format, error: 'Upload en ZIP fil.' }, req));
+  if (!r2.isConfigured()) return res.send(renderPage('hosting-replace', { campaign, format, error: 'R2 storage ikke konfigureret.' }, req));
+
+  try {
+    const formatPackages = parseZipToFormats(req.file.buffer);
+
+    // For single format: use first format found, or the one matching format_name
+    let pkg = formatPackages.find(p => p.formatName === format.format_name) || formatPackages[0];
+    if (!pkg) {
+      return res.send(renderPage('hosting-replace', { campaign, format, error: 'Ingen gyldige banner formater fundet i ZIP.' }, req));
+    }
+
+    const warnings = [];
+
+    // If ZIP contains multiple formats, warn
+    if (formatPackages.length > 1) {
+      warnings.push(`ZIP indeholder ${formatPackages.length} formater — kun ${pkg.formatName} bruges til erstatning af ${format.format_name}`);
+    }
+
+    const newIndex = pkg.files.find(f => f.name === 'index.html' || f.name.endsWith('/index.html'));
+    if (newIndex) {
+      const newHtml = newIndex.buffer.toString('utf-8');
+      const newMeta = parseMeta(newHtml);
+
+      // Check ad.size
+      if (newMeta.adWidth && newMeta.adHeight) {
+        if (newMeta.adWidth !== format.width || newMeta.adHeight !== format.height) {
+          warnings.push(`ad.size (${newMeta.adWidth}x${newMeta.adHeight}) matcher ikke eksisterende (${format.width}x${format.height})`);
+        }
+      }
+
+      // Dimension from format name
+      const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
+      if (dimMatch) {
+        const pw = parseInt(dimMatch[1]), ph = parseInt(dimMatch[2]);
+        if (pw !== format.width || ph !== format.height) {
+          warnings.push(`Format dimensioner (${pw}x${ph}) matcher ikke eksisterende (${format.width}x${format.height})`);
+        }
+      }
+
+      // Fetch old for template/banner ID comparison
+      const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+      try {
+        const resp = await fetch(`${cdnBase}/hosted/${campaign.id}/${format.format_name}/index.html`);
+        if (resp.ok) {
+          const oldHtml = await resp.text();
+          const oldMeta = parseMeta(oldHtml);
+          if (oldMeta.templateId && newMeta.templateId && oldMeta.templateId !== newMeta.templateId) {
+            warnings.push(`Denne banner er fra en anden Zuuvi template (${oldMeta.templateId} → ${newMeta.templateId})`);
+          }
+          if (oldMeta.bannerId && newMeta.bannerId && oldMeta.bannerId !== newMeta.bannerId) {
+            warnings.push(`Banner ID ændret (${oldMeta.bannerId} → ${newMeta.bannerId})`);
+          }
+        }
+      } catch (_) {}
+    }
+
+    // Store temp data
+    const tempKey = require('crypto').randomUUID();
+    replaceTempStore.set(tempKey, {
+      campaignId: campaign.id,
+      formatId: format.id,
+      pkg,
+      createdAt: Date.now(),
+    });
+    setTimeout(() => replaceTempStore.delete(tempKey), 15 * 60 * 1000);
+
+    res.send(renderPage('hosting-replace-confirm', {
+      campaign, format, warnings, newFormats: [], missingFormats: [], matchedFormats: [format.format_name], tempKey
+    }, req));
+  } catch (err) {
+    console.error(`[hosting:format-replace] Error:`, err.message);
+    res.send(renderPage('hosting-replace', { campaign, format, error: `Fejl: ${err.message}` }, req));
+  }
+});
+
+// Format-level replace: execute confirmed replacement
+app.post('/hosting/:id/format/:formatId/replace/confirm', requireAuth, async (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Campaign ikke fundet' }, req));
+  const format = db.getHostedFormat(parseInt(req.params.formatId));
+  if (!format || format.campaign_id !== campaign.id) return res.status(404).send(renderPage('error', { message: 'Format ikke fundet' }, req));
+
+  const tempData = replaceTempStore.get(req.body.tempKey);
+  if (!tempData || tempData.campaignId !== campaign.id || tempData.formatId !== format.id) {
+    return res.send(renderPage('error', { message: 'Upload-data udløbet. Upload venligst igen.' }, req));
+  }
+  replaceTempStore.delete(req.body.tempKey);
+
+  try {
+    const pkg = tempData.pkg;
+    const pkgSize = pkg.files.reduce((sum, f) => sum + f.buffer.length, 0);
+
+    console.log(`[hosting:${campaign.id}] Replacing format: ${format.format_name}`);
+    await r2.deletePrefix(`hosted/${campaign.id}/${format.format_name}/`);
+    await r2.uploadBannerPackage(campaign.id, format.format_name, pkg.files);
+
+    // Parse new click URL
+    let clickUrl = null;
+    const indexFile = pkg.files.find(f => f.name.endsWith('index.html'));
+    if (indexFile) clickUrl = parseClickUrl(indexFile.buffer.toString('utf-8'));
+
+    db.updateHostedFormat(format.id, {
+      size_bytes: pkgSize,
+      file_count: pkg.files.length,
+      click_url: clickUrl,
+    });
+
+    // Recalculate campaign total size
+    const allFormats = db.getHostedFormats(campaign.id);
+    const totalSize = allFormats.reduce((sum, f) => sum + (f.id === format.id ? pkgSize : (f.size_bytes || 0)), 0);
+    db.updateHosted(campaign.id, { total_size_bytes: totalSize });
+
+    console.log(`[hosting:${campaign.id}] Format replace done: ${format.format_name}`);
+    res.redirect(`/hosting/${campaign.id}`);
+  } catch (err) {
+    console.error(`[hosting:${campaign.id}] Format replace error:`, err.message);
+    res.send(renderPage('error', { message: `Fejl under opdatering: ${err.message}` }, req));
+  }
+});
+
 // Internal tracking pixel — NOT included in GAM tags (ad servers reject foreign URLs)
 // Can be used manually for internal tracking: /hosting/pixel/:campaignId/:formatId
 const PIXEL_GIF = Buffer.from('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7', 'base64');
