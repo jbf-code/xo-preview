@@ -7,6 +7,8 @@
 const express = require('express');
 const session = require('express-session');
 const SQLiteStore = require('connect-sqlite3')(session);
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
 const db = require('./lib/db');
@@ -23,8 +25,32 @@ const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
 const PREVIEWS_DIR = path.join(DATA_DIR, 'previews');
 if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
-// ── Middleware ─────────────────────────────────────────────────────────────────
+// ── Security middleware ────────────────────────────────────────────────────────
 app.set('trust proxy', 1);
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", "https://cdnjs.cloudflare.com", "https://assets.zuuvi.com"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com", "https://cdnjs.cloudflare.com"],
+      imgSrc: ["'self'", "data:", "https:"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
+      frameSrc: ["'self'", "https:"],
+      connectSrc: ["'self'", "https:"],
+    },
+  },
+}));
+
+// Rate limiting on login
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 5,
+  message: 'For mange loginforsøg — prøv igen om 15 minutter.',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+// ── Middleware ─────────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -60,21 +86,34 @@ function requireAuth(req, res, next) {
 const bcrypt = require('bcryptjs');
 
 function getUsers() {
-  // Format: USER_1=email:password,USER_2=email:password
-  // Or use defaults for dev
+  // Format: USER_1=email:bcrypt_hash:name
+  // Or use hashed defaults for dev
   const defaults = [
-    { email: 'jbf@xo.dk', password: 'xopreview2024', name: 'JBF' },
-    { email: 'cca@xo.dk', password: 'xopreview2024', name: 'CCA' },
-    { email: 'demo@xo.dk', password: 'demo', name: 'Demo' },
+    { email: 'jbf@xo.dk', hashedPassword: '$2a$10$yaLqU6uksyyst1JKQoWE4OgDebpGULiDBNrRqE7.fNv9WnwgEjzcK', name: 'JBF' },
+    { email: 'cca@xo.dk', hashedPassword: '$2a$10$486kUMYZdf/GOUWinakVIeMmomP6FO3xE6RbfqbZZJjavTE9K/yty', name: 'CCA' },
   ];
 
   const users = [];
-  // Check env vars
+  // Check env vars (format: email:bcrypt_hash:name)
   for (let i = 1; i <= 20; i++) {
     const val = process.env[`USER_${i}`];
     if (val) {
-      const [email, password, name] = val.split(':');
-      if (email && password) users.push({ email, password, name: name || email.split('@')[0] });
+      // Split on first two colons only (bcrypt hashes contain $)
+      const firstColon = val.indexOf(':');
+      if (firstColon === -1) continue;
+      const email = val.slice(0, firstColon);
+      const rest = val.slice(firstColon + 1);
+      // Find the last colon for the name (bcrypt hash is between)
+      const lastColon = rest.lastIndexOf(':');
+      let hashedPassword, name;
+      if (lastColon > 0 && rest[lastColon - 1] !== '$') {
+        hashedPassword = rest.slice(0, lastColon);
+        name = rest.slice(lastColon + 1);
+      } else {
+        hashedPassword = rest;
+        name = email.split('@')[0];
+      }
+      if (email && hashedPassword) users.push({ email, hashedPassword, name });
     }
   }
   // Use defaults only if no env users defined
@@ -88,12 +127,12 @@ app.get('/login', (req, res) => {
   res.send(renderPage('login', { error: null }, req));
 });
 
-app.post('/login', (req, res) => {
+app.post('/login', loginLimiter, (req, res) => {
   const { email, password } = req.body;
   const users = getUsers();
   const user = users.find(u => u.email.toLowerCase() === (email || '').toLowerCase());
 
-  if (!user || user.password !== password) {
+  if (!user || !bcrypt.compareSync(password || '', user.hashedPassword)) {
     return res.send(renderPage('login', { error: 'Forkert email eller password' }, req));
   }
 
