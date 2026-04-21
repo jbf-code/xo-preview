@@ -422,42 +422,68 @@ app.get('/hosting/:id', requireAuth, async (req, res) => {
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
 
-// Backfill click URLs for existing formats that don't have one
-app.post('/hosting/backfill-clicks', requireAuth, async (req, res) => {
-  const campaigns = db.getAllHosted();
-  let updated = 0;
-  for (const c of campaigns) {
-    const formats = db.getHostedFormats(c.id);
-    for (const f of formats) {
-      if (f.click_url) continue;
-      try {
-        const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
-        const resp = await fetch(`${cdnBase}/hosted/${c.id}/${f.format_name}/index.html`);
-        if (!resp.ok) continue;
-        const html = await resp.text();
-        let clickUrl = null;
-        const ctMatch = html.match(/clickTag\s*=\s*["']([^"']+)["']/);
-        if (ctMatch) clickUrl = ctMatch[1];
-        if (!clickUrl) {
-          const urlMatches = html.match(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts)[^"]+)"/g);
-          if (urlMatches) {
-            for (const m of urlMatches) {
-              const url = m.slice(1, -1);
-              if (!url.match(/\.(js|css|otf|woff|svg|png|jpg|mp4|gif)$/i)) { clickUrl = url; break; }
-            }
+// Scan click URLs for a specific campaign (fetch from CDN, parse HTML)
+app.post('/hosting/:id/scan-clicks', requireAuth, async (req, res) => {
+  const formats = db.getHostedFormats(req.params.id);
+  const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+  for (const f of formats) {
+    try {
+      const resp = await fetch(`${cdnBase}/hosted/${req.params.id}/${f.format_name}/index.html`);
+      if (!resp.ok) continue;
+      const html = await resp.text();
+      let clickUrl = null;
+      const ctMatch = html.match(/clickTag\s*=\s*["']([^"']+)["']/);
+      if (ctMatch) clickUrl = ctMatch[1];
+      if (!clickUrl) {
+        const urlMatches = html.match(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts)[^"]+)"/g);
+        if (urlMatches) {
+          for (const m of urlMatches) {
+            const url = m.slice(1, -1);
+            if (!url.match(/\.(js|css|otf|woff|svg|png|jpg|mp4|gif)$/i)) { clickUrl = url; break; }
           }
         }
-        if (clickUrl) {
-          db.db ? null : null; // noop
-          // Direct update
-          const dbMod = require('./lib/db');
-          dbMod.updateFormatClickUrl(f.id, clickUrl);
-          updated++;
+      }
+      if (clickUrl) db.updateFormatClickUrl(f.id, clickUrl);
+    } catch (_) {}
+  }
+  res.redirect(`/hosting/${req.params.id}`);
+});
+
+// Update click URL for a format — rewrites the actual index.html on R2
+app.post('/hosting/:campaignId/format/:formatId/click-url', requireAuth, async (req, res) => {
+  const { campaignId, formatId } = req.params;
+  const newClickUrl = (req.body.click_url || '').trim();
+  const format = db.getHostedFormats(campaignId).find(f => f.id === parseInt(formatId));
+  if (!format) return res.redirect(`/hosting/${campaignId}`);
+
+  // Update DB
+  db.updateFormatClickUrl(format.id, newClickUrl || null);
+
+  // Rewrite index.html on R2 if URL changed
+  if (newClickUrl && r2.isConfigured()) {
+    try {
+      const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+      const resp = await fetch(`${cdnBase}/hosted/${campaignId}/${format.format_name}/index.html`);
+      if (resp.ok) {
+        let html = await resp.text();
+        const oldUrl = format.click_url;
+        if (oldUrl && html.includes(oldUrl)) {
+          html = html.split(oldUrl).join(newClickUrl);
+        } else {
+          // Replace clickTag assignment
+          html = html.replace(/(clickTag\s*=\s*["'])[^"']*(["'])/, `$1${newClickUrl}$2`);
+          // Also replace any window.open URL references
+          html = html.replace(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts\.)[^"]+)"/, `"${newClickUrl}"`);
         }
-      } catch (_) {}
+        const key = `hosted/${campaignId}/${format.format_name}/index.html`;
+        await r2.uploadFile(key, Buffer.from(html, 'utf-8'), 'text/html');
+        console.log(`[hosting] Rewrote click URL in ${key}: ${newClickUrl}`);
+      }
+    } catch (err) {
+      console.error(`[hosting] Error rewriting click URL:`, err.message);
     }
   }
-  res.redirect('/hosting');
+  res.redirect(`/hosting/${campaignId}`);
 });
 
 // Internal tracking pixel — NOT included in GAM tags (ad servers reject foreign URLs)
