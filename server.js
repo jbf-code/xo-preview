@@ -265,7 +265,7 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
 });
 
 // ── Routes: View preview (PUBLIC — no auth required) ──────────────────────────
-app.get('/preview/:id', (req, res) => {
+app.get('/preview/:id', async (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (!preview || preview.status !== 'ready') {
     return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet eller ikke klar endnu' }, req));
@@ -274,7 +274,26 @@ app.get('/preview/:id', (req, res) => {
   // Increment view counter (fire-and-forget)
   try { db.incrementViews(preview.id); } catch (_) {}
 
-  // Dynamic rendering — always uses latest template code
+  // Live re-fetch from Zuuvi source on every pageload
+  try {
+    const freshData = await extractBanners(preview.zuuvi_url);
+    if (freshData && freshData.banners && freshData.banners.length > 0) {
+      // Update DB with fresh data (fire-and-forget)
+      try { db.updateBannersJson(preview.id, JSON.stringify(freshData.banners)); } catch (_) {}
+      const html = generatePreviewHtml({
+        id: preview.id,
+        campaignName: preview.name,
+        clientName: '',
+        banners: freshData.banners,
+        zuuviUrl: preview.zuuvi_url,
+      });
+      return res.send(html);
+    }
+  } catch (err) {
+    console.log(`[preview:${preview.id}] Live fetch failed, using cached: ${err.message}`);
+  }
+
+  // Fallback to cached banners_json if live fetch fails
   if (preview.banners_json) {
     const banners = JSON.parse(preview.banners_json);
     const html = generatePreviewHtml({
