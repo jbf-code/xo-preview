@@ -186,6 +186,65 @@ app.get('/api/status/:id', requireAuth, (req, res) => {
   res.json({ status: preview.status, error: preview.error_msg });
 });
 
+// ── Routes: Admin dashboard ─────────────────────────────────────────────────────
+app.get('/admin', requireAuth, (req, res) => {
+  const previews = db.getAllPreviews();
+  res.send(renderPage('admin', { previews }));
+});
+
+// ── Routes: Edit / Re-generate preview ───────────────────────────────────────────
+app.post('/edit/:id', requireAuth, async (req, res) => {
+  const preview = db.getPreview(req.params.id);
+  if (!preview) return res.status(404).send(renderPage('error', { message: 'Preview ikke fundet' }));
+
+  const newUrl = (req.body.url || '').trim() || preview.zuuvi_url;
+  const newName = (req.body.name || '').trim() || preview.name;
+
+  // Update DB: new URL + name, reset to generating
+  db.updatePreview(req.params.id, {
+    zuuvi_url: newUrl,
+    name: newName,
+    status: 'generating',
+    banner_count: 0,
+    live_count: 0,
+    error_msg: null,
+  });
+
+  // Redirect to generating page
+  res.redirect(`/generating/${req.params.id}`);
+
+  // Start extraction in background
+  const id = req.params.id;
+  try {
+    console.log(`[${id}] Re-generating from: ${newUrl}`);
+    const result = await extractBanners(newUrl);
+
+    const html = generatePreviewHtml({
+      id,
+      campaignName: result.campaignName || newName,
+      clientName: result.clientName || '',
+      banners: result.banners,
+      zuuviUrl: newUrl,
+    });
+
+    const previewDir = path.join(__dirname, 'previews');
+    if (!fs.existsSync(previewDir)) fs.mkdirSync(previewDir, { recursive: true });
+    fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
+
+    db.updatePreview(id, {
+      name: result.campaignName || newName,
+      status: 'ready',
+      banner_count: result.banners.length,
+      live_count: result.banners.filter(b => b.html && b.html.length > 100).length,
+    });
+
+    console.log(`[${id}] Re-generated: ${result.banners.length} banners`);
+  } catch (err) {
+    console.error(`[${id}] Re-generation failed:`, err.message);
+    db.updatePreview(id, { status: 'error', error_msg: err.message });
+  }
+});
+
 // ── Routes: View preview (PUBLIC — no auth required) ──────────────────────────
 app.get('/preview/:id', (req, res) => {
   const preview = db.getPreview(req.params.id);
@@ -197,6 +256,9 @@ app.get('/preview/:id', (req, res) => {
   if (!fs.existsSync(htmlPath)) {
     return res.status(404).send(renderPage('error', { message: 'Preview-fil mangler' }));
   }
+
+  // Increment view counter (fire-and-forget)
+  try { db.incrementViews(preview.id); } catch (_) {}
 
   res.sendFile(htmlPath);
 });
