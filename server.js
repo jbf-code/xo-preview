@@ -217,10 +217,43 @@ app.get('/api/status/:id', requireAuth, (req, res) => {
   res.json({ status: preview.status, error: preview.error_msg });
 });
 
-// ── Routes: Admin dashboard ─────────────────────────────────────────────────────
+// ── Routes: Settings ─────────────────────────────────────────────────────────
+app.get('/settings', requireAuth, (req, res) => {
+  const users = getUsers().map(u => ({ name: u.name, email: u.email }));
+  const previewCount = db.getAllPreviews().length;
+  const hostingCount = db.getAllHosted().length;
+  const passwordChanged = req.query.pw === 'ok';
+  const passwordError = req.query.pw === 'mismatch' ? 'Passwords matcher ikke'
+    : req.query.pw === 'wrong' ? 'Forkert nuværende password'
+    : req.query.pw === 'short' ? 'Nyt password skal være mindst 8 tegn'
+    : null;
+  res.send(renderPage('settings', { users, previewCount, hostingCount, passwordChanged, passwordError }, req));
+});
+
+app.post('/settings/password', requireAuth, (req, res) => {
+  const { current_password, new_password, confirm_password } = req.body;
+  const users = getUsers();
+  const user = users.find(u => u.email.toLowerCase() === req.session.user.email.toLowerCase());
+
+  if (!user || !bcrypt.compareSync(current_password || '', user.hashedPassword)) {
+    return res.redirect('/settings?pw=wrong');
+  }
+  if (new_password !== confirm_password) {
+    return res.redirect('/settings?pw=mismatch');
+  }
+  if (!new_password || new_password.length < 8) {
+    return res.redirect('/settings?pw=short');
+  }
+
+  const newHash = bcrypt.hashSync(new_password, 10);
+  user.hashedPassword = newHash;
+  console.log(`[settings] Password changed for ${user.email} by ${req.session.user.email}`);
+  return res.redirect('/settings?pw=ok');
+});
+
+// Backwards compatibility
 app.get('/admin', requireAuth, (req, res) => {
-  const previews = db.getAllPreviews();
-  res.send(renderPage('admin', { previews }, req));
+  res.redirect('/settings');
 });
 
 // ── Routes: Edit / Re-generate preview ───────────────────────────────────────────
