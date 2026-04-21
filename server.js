@@ -329,6 +329,7 @@ app.get('/hosting', requireAuth, async (req, res) => {
     const stats = cdnStats[c.id] || {};
     c.cdn_requests = stats.requests || 0;
     c.cdn_mb_served = stats.mb_served || 0;
+    c.cdn_impressions = stats.impressions || 0;
   }
   res.send(renderPage('hosting', { campaigns }, req));
 });
@@ -457,6 +458,7 @@ app.get('/hosting/:id', requireAuth, async (req, res) => {
     const s = statsMap[f.format_name] || {};
     f.cdn_requests = s.requests || 0;
     f.cdn_mb_served = s.mb_served || 0;
+    f.cdn_impressions = s.impressions || 0;
   }
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
