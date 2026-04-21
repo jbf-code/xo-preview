@@ -374,9 +374,28 @@ app.post('/hosting/upload', requireAuth, upload.single('zipfile'), async (req, r
       let width = 0, height = 0;
       const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
       if (dimMatch) { width = parseInt(dimMatch[1]); height = parseInt(dimMatch[2]); }
+      // Extract click URL from index.html
+      let clickUrl = null;
+      const indexFile = pkg.files.find(f => f.name.endsWith('index.html'));
+      if (indexFile) {
+        const html = indexFile.buffer.toString('utf-8');
+        // Try clickTag = "url" pattern first (Zuuvi/GWD standard)
+        const ctMatch = html.match(/clickTag\s*=\s*["']([^"']+)["']/);
+        if (ctMatch) clickUrl = ctMatch[1];
+        // Fallback: look for landing URLs (not asset URLs)
+        if (!clickUrl) {
+          const urlMatches = html.match(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts)[^"]+)"/g);
+          if (urlMatches) {
+            for (const m of urlMatches) {
+              const url = m.slice(1, -1);
+              if (!url.match(/\.(js|css|otf|woff|svg|png|jpg|mp4|gif)$/i)) { clickUrl = url; break; }
+            }
+          }
+        }
+      }
       // Clean GAM tag — no external tracking pixels (ad servers reject foreign URLs)
       const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe>`;
-      db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: tag, size_bytes: pkgSize, file_count: pkg.files.length });
+      db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: tag, size_bytes: pkgSize, file_count: pkg.files.length, click_url: clickUrl });
     }
 
     db.updateHosted(id, { status: 'ready', total_size_bytes: totalSizeBytes, format_count: formatPackages.length });
@@ -401,6 +420,44 @@ app.get('/hosting/:id', requireAuth, async (req, res) => {
     f.cdn_mb_served = s.mb_served || 0;
   }
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
+});
+
+// Backfill click URLs for existing formats that don't have one
+app.post('/hosting/backfill-clicks', requireAuth, async (req, res) => {
+  const campaigns = db.getAllHosted();
+  let updated = 0;
+  for (const c of campaigns) {
+    const formats = db.getHostedFormats(c.id);
+    for (const f of formats) {
+      if (f.click_url) continue;
+      try {
+        const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+        const resp = await fetch(`${cdnBase}/hosted/${c.id}/${f.format_name}/index.html`);
+        if (!resp.ok) continue;
+        const html = await resp.text();
+        let clickUrl = null;
+        const ctMatch = html.match(/clickTag\s*=\s*["']([^"']+)["']/);
+        if (ctMatch) clickUrl = ctMatch[1];
+        if (!clickUrl) {
+          const urlMatches = html.match(/"(https?:\/\/(?!s0\.2mdn|assets\.zuuvi|cdnjs|fonts)[^"]+)"/g);
+          if (urlMatches) {
+            for (const m of urlMatches) {
+              const url = m.slice(1, -1);
+              if (!url.match(/\.(js|css|otf|woff|svg|png|jpg|mp4|gif)$/i)) { clickUrl = url; break; }
+            }
+          }
+        }
+        if (clickUrl) {
+          db.db ? null : null; // noop
+          // Direct update
+          const dbMod = require('./lib/db');
+          dbMod.updateFormatClickUrl(f.id, clickUrl);
+          updated++;
+        }
+      } catch (_) {}
+    }
+  }
+  res.redirect('/hosting');
 });
 
 // Internal tracking pixel — NOT included in GAM tags (ad servers reject foreign URLs)
