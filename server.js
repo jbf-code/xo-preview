@@ -146,8 +146,8 @@ app.post('/new', requireAuth, async (req, res) => {
     // Generate HTML
     const html = generatePreviewHtml({
       id,
-      campaignName: result.campaignName || campaignName,
-      clientName: result.clientName || '',
+      campaignName: campaignName,
+      clientName: '',
       banners: result.banners,
       zuuviUrl: url,
     });
@@ -159,7 +159,7 @@ app.post('/new', requireAuth, async (req, res) => {
 
     // Update DB
     db.updatePreview(id, {
-      name: result.campaignName || campaignName,
+      name: campaignName,
       status: 'ready',
       banner_count: result.banners.length,
       live_count: result.banners.filter(b => b.html && b.html.length > 100).length,
@@ -224,8 +224,8 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
 
     const html = generatePreviewHtml({
       id,
-      campaignName: result.campaignName || newName,
-      clientName: result.clientName || '',
+      campaignName: newName,
+      clientName: '',
       banners: result.banners,
       zuuviUrl: newUrl,
     });
@@ -235,7 +235,7 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
     fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
 
     db.updatePreview(id, {
-      name: result.campaignName || newName,
+      name: newName,
       status: 'ready',
       banner_count: result.banners.length,
       live_count: result.banners.filter(b => b.html && b.html.length > 100).length,
