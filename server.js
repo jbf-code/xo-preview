@@ -18,6 +18,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const SESSION_SECRET = process.env.SESSION_SECRET || 'xo-preview-dev-secret-change-me';
 const BASE_URL = process.env.BASE_URL || `http://localhost:${PORT}`;
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data');
+const PREVIEWS_DIR = path.join(DATA_DIR, 'previews');
+if (!fs.existsSync(PREVIEWS_DIR)) fs.mkdirSync(PREVIEWS_DIR, { recursive: true });
 
 // ── Middleware ─────────────────────────────────────────────────────────────────
 app.set('trust proxy', 1);
@@ -26,7 +29,7 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.use(session({
-  store: new SQLiteStore({ dir: path.join(__dirname, 'data'), db: 'sessions.sqlite' }),
+  store: new SQLiteStore({ dir: DATA_DIR, db: 'sessions.sqlite' }),
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
@@ -150,7 +153,7 @@ app.post('/new', requireAuth, async (req, res) => {
     });
 
     // Save HTML to disk
-    const previewDir = path.join(__dirname, 'previews');
+    const previewDir = PREVIEWS_DIR;
     if (!fs.existsSync(previewDir)) fs.mkdirSync(previewDir, { recursive: true });
     fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
 
@@ -227,7 +230,7 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
       zuuviUrl: newUrl,
     });
 
-    const previewDir = path.join(__dirname, 'previews');
+    const previewDir = PREVIEWS_DIR;
     if (!fs.existsSync(previewDir)) fs.mkdirSync(previewDir, { recursive: true });
     fs.writeFileSync(path.join(previewDir, `${id}.html`), html);
 
