@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-# Install Playwright system dependencies
+# Install Playwright system dependencies (cached layer — only rebuilds if Dockerfile changes)
 RUN apt-get update && apt-get install -y \
     libnss3 libnspr4 libatk1.0-0 libatk-bridge2.0-0 \
     libcups2 libdrm2 libdbus-1-3 libxkbcommon0 \
@@ -11,12 +11,14 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-COPY package.json ./
+# Copy only package files first — npm install is cached unless dependencies change
+COPY package.json package-lock.json* ./
 RUN npm install --production
 
-# Install Playwright Chromium
+# Install Playwright Chromium — cached unless playwright version changes in package.json
 RUN npx playwright install chromium
 
+# Copy source code last — only this layer rebuilds on code changes
 COPY . .
 
 # Create data/previews dirs
