@@ -274,6 +274,124 @@ function renderPage(page, data = {}, req) {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
+// ── Routes: Hosting ───────────────────────────────────────────────────────────
+const multer = require('multer');
+const AdmZip = require('adm-zip');
+const r2 = require('./lib/r2');
+
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
+
+app.get('/hosting', requireAuth, (req, res) => {
+  const campaigns = db.getAllHosted();
+  res.send(renderPage('hosting', { campaigns }, req));
+});
+
+app.get('/hosting/new', requireAuth, (req, res) => {
+  res.send(renderPage('hosting-new', { error: null }, req));
+});
+
+app.post('/hosting/upload', requireAuth, upload.single('zipfile'), async (req, res) => {
+  if (!r2.isConfigured()) {
+    return res.send(renderPage('hosting-new', { error: 'R2 storage not configured. Contact admin.' }, req));
+  }
+  if (!req.file) {
+    return res.send(renderPage('hosting-new', { error: 'Upload a ZIP file.' }, req));
+  }
+
+  const campaignName = (req.body.name || '').trim() || 'Unnamed Campaign';
+  const id = uuidv4().slice(0, 8);
+
+  db.createHosted({ id, name: campaignName, created_by: req.session.user.email });
+  res.redirect(`/hosting/${id}`);
+
+  // Process in background
+  try {
+    console.log(`[hosting:${id}] Processing upload: ${req.file.originalname} (${(req.file.size / 1024).toFixed(0)} KB)`);
+    const zip = new AdmZip(req.file.buffer);
+    const entries = zip.getEntries();
+
+    const innerZips = entries.filter(e => e.entryName.endsWith('.zip'));
+    const formatPackages = [];
+
+    if (innerZips.length > 0) {
+      // ZIP of ZIPs (Zuuvi googleAdManager-display export)
+      for (const innerEntry of innerZips) {
+        const formatName = path.basename(innerEntry.entryName, '.zip');
+        const innerZip = new AdmZip(innerEntry.getData());
+        const files = innerZip.getEntries()
+          .filter(e => !e.isDirectory)
+          .map(e => ({ name: e.entryName, buffer: e.getData() }));
+        formatPackages.push({ formatName, files });
+      }
+    } else {
+      // Single banner or grouped by directories
+      const groups = {};
+      for (const entry of entries) {
+        if (entry.isDirectory) continue;
+        const parts = entry.entryName.split('/');
+        if (parts.some(p => p.startsWith('__') || p.startsWith('.'))) continue;
+        let groupName, fileName;
+        if (parts.length > 1) { groupName = parts[0]; fileName = parts.slice(1).join('/'); }
+        else { groupName = 'default'; fileName = parts[0]; }
+        if (!groups[groupName]) groups[groupName] = [];
+        groups[groupName].push({ name: fileName, buffer: entry.getData() });
+      }
+      const groupNames = Object.keys(groups);
+      if (groupNames.length === 1 && groups[groupNames[0]].some(f => f.name === 'index.html')) {
+        const indexFile = groups[groupNames[0]].find(f => f.name === 'index.html');
+        const html = indexFile.buffer.toString('utf8');
+        const sizeMatch = html.match(/ad\.size["']?\s*content=["']?width=(\d+),\s*height=(\d+)/i);
+        const formatName = sizeMatch ? `${sizeMatch[1]}x${sizeMatch[2]}` : groupNames[0];
+        formatPackages.push({ formatName, files: groups[groupNames[0]] });
+      } else {
+        for (const [groupName, files] of Object.entries(groups)) {
+          if (files.some(f => f.name === 'index.html' || f.name.endsWith('/index.html'))) {
+            formatPackages.push({ formatName: groupName, files });
+          }
+        }
+      }
+    }
+
+    if (formatPackages.length === 0) {
+      db.updateHosted(id, { status: 'error', error_msg: 'No valid banner formats found in ZIP' });
+      return;
+    }
+
+    for (const pkg of formatPackages) {
+      console.log(`[hosting:${id}] Uploading format: ${pkg.formatName} (${pkg.files.length} files)`);
+      const { indexUrl, prefix } = await r2.uploadBannerPackage(id, pkg.formatName, pkg.files);
+      let width = 0, height = 0;
+      const dimMatch = pkg.formatName.match(/(\d+)x(\d+)/);
+      if (dimMatch) { width = parseInt(dimMatch[1]); height = parseInt(dimMatch[2]); }
+      const tag = `<iframe width="${width}" height="${height}" src="${indexUrl}?cachebuster=%%CACHEBUSTER%%&dfpclick=%%CLICK_URL_ESC%%" frameborder="0" style="border: none" scrolling="no"></iframe>`;
+      db.addHostedFormat({ campaign_id: id, format_name: pkg.formatName, width, height, r2_prefix: prefix, cdn_url: indexUrl, tag_html: tag });
+    }
+
+    db.updateHosted(id, { status: 'ready' });
+    console.log(`[hosting:${id}] Ready: ${formatPackages.length} formats uploaded`);
+  } catch (err) {
+    console.error(`[hosting:${id}] Error:`, err.message);
+    db.updateHosted(id, { status: 'error', error_msg: err.message });
+  }
+});
+
+app.get('/hosting/:id', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send(renderPage('error', { message: 'Hosted campaign not found' }, req));
+  const formats = db.getHostedFormats(req.params.id);
+  res.send(renderPage('hosting-detail', { campaign, formats }, req));
+});
+
+app.post('/hosting/delete/:id', requireAuth, async (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (campaign) {
+    if (r2.isConfigured()) { try { await r2.deletePrefix(`hosted/${req.params.id}/`); } catch (_) {} }
+    db.deleteHosted(req.params.id);
+  }
+  res.redirect('/hosting');
+});
+
+// ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n🚀 XO Preview Platform running at http://localhost:${PORT}\n`);
+  console.log(`\n🚀 XO Studio running at http://localhost:${PORT}\n`);
 });
