@@ -11,11 +11,15 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
+function shortId() { return crypto.randomBytes(4).toString('hex'); }
 const db = require('./lib/db');
 const { extractBanners } = require('./lib/extractor');
 const { generatePreviewHtml } = require('./lib/renderer');
 const analytics = require('./lib/analytics');
 const fs = require('fs');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -154,14 +158,16 @@ app.get('/', requireAuth, (req, res) => {
 
 // ── Routes: Create preview ────────────────────────────────────────────────────
 app.get('/new', requireAuth, (req, res) => {
-  res.send(renderPage('new', { error: null }, req));
+  const themes = db.getAllThemes();
+  res.send(renderPage('new', { error: null, themes }, req));
 });
 
 app.post('/new', requireAuth, async (req, res) => {
-  const { url, name } = req.body;
+  const { url, name, theme_id } = req.body;
 
   if (!url || !url.includes('zuuvi')) {
-    return res.send(renderPage('new', { error: 'Indtast en gyldig Zuuvi URL' }, req));
+    const themes = db.getAllThemes();
+    return res.send(renderPage('new', { error: 'Indtast en gyldig Zuuvi URL', themes }, req));
   }
 
   const id = uuidv4().slice(0, 8);
@@ -175,6 +181,10 @@ app.post('/new', requireAuth, async (req, res) => {
     status: 'generating',
     created_by: req.session.user.email,
   });
+
+  // Save theme selection
+  const selectedTheme = theme_id || 'xo-default';
+  try { db.setPreviewTheme(id, selectedTheme); } catch (_) {}
 
   // Redirect to a "generating" page that polls for completion
   res.redirect(`/generating/${id}`);
@@ -222,12 +232,55 @@ app.get('/settings', requireAuth, (req, res) => {
   const users = getUsers().map(u => ({ name: u.name, email: u.email }));
   const previewCount = db.getAllPreviews().length;
   const hostingCount = db.getAllHosted().length;
+  const themes = db.getAllThemes();
   const passwordChanged = req.query.pw === 'ok';
   const passwordError = req.query.pw === 'mismatch' ? 'Passwords matcher ikke'
     : req.query.pw === 'wrong' ? 'Forkert nuværende password'
     : req.query.pw === 'short' ? 'Nyt password skal være mindst 8 tegn'
     : null;
-  res.send(renderPage('settings', { users, previewCount, hostingCount, passwordChanged, passwordError }, req));
+  res.send(renderPage('settings', { users, previewCount, hostingCount, passwordChanged, passwordError, themes }, req));
+});
+
+// ── Routes: Themes ──────────────────────────────────────────────────────────────────
+app.get('/settings/themes/new', requireAuth, (req, res) => {
+  res.send(renderPage('theme-new', { error: null }, req));
+});
+
+app.post('/settings/themes', requireAuth, upload.single('logo'), (req, res) => {
+  const name = (req.body.name || '').trim();
+  const accent_color = (req.body.accent_color || '#e87722').trim();
+  const bg_color = (req.body.bg_color || '#0e0e10').trim();
+  const header_color = (req.body.header_color || '#18181b').trim();
+
+  if (!name) {
+    return res.send(renderPage('theme-new', { error: 'Tema navn er påkrævet' }, req));
+  }
+
+  let logo_base64 = null;
+  if (req.file) {
+    const mime = req.file.mimetype || 'image/png';
+    logo_base64 = `data:${mime};base64,${req.file.buffer.toString('base64')}`;
+  }
+
+  const id = shortId();
+  try {
+    db.createTheme({ id, name, accent_color, bg_color, header_color, logo_base64 });
+    console.log(`[themes] Created theme: ${name} (${id}) by ${req.session.user.email}`);
+  } catch (err) {
+    console.error('[themes] Create error:', err.message);
+    return res.send(renderPage('theme-new', { error: 'Fejl ved oprettelse: ' + err.message }, req));
+  }
+  res.redirect('/settings');
+});
+
+app.post('/settings/themes/:id/delete', requireAuth, (req, res) => {
+  const deleted = db.deleteTheme(req.params.id);
+  if (!deleted) {
+    console.log(`[themes] Delete skipped (default or not found): ${req.params.id}`);
+  } else {
+    console.log(`[themes] Deleted theme: ${req.params.id} by ${req.session.user.email}`);
+  }
+  res.redirect('/settings');
 });
 
 app.post('/settings/password', requireAuth, (req, res) => {
@@ -260,7 +313,9 @@ app.get('/admin', requireAuth, (req, res) => {
 app.get('/edit/:id', requireAuth, (req, res) => {
   const preview = db.getPreview(req.params.id);
   if (!preview) return res.redirect('/');
-  res.send(renderPage('edit-preview', { preview }, req));
+  const themes = db.getAllThemes();
+  const currentThemeId = preview.theme_id || 'xo-default';
+  res.send(renderPage('edit-preview', { preview, themes, currentThemeId }, req));
 });
 
 app.post('/edit/:id', requireAuth, async (req, res) => {
@@ -269,6 +324,7 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
 
   const newUrl = (req.body.url || '').trim() || preview.zuuvi_url;
   const newName = (req.body.name || '').trim() || preview.name;
+  const newThemeId = (req.body.theme_id || '').trim() || preview.theme_id || 'xo-default';
 
   // Update DB: new URL + name, reset to generating
   db.updatePreview(req.params.id, {
@@ -279,6 +335,7 @@ app.post('/edit/:id', requireAuth, async (req, res) => {
     live_count: 0,
     error_msg: null,
   });
+  try { db.setPreviewTheme(req.params.id, newThemeId); } catch (_) {}
 
   // Redirect to generating page
   res.redirect(`/generating/${req.params.id}`);
@@ -314,6 +371,9 @@ app.get('/preview/:id', async (req, res) => {
   // Increment view counter (fire-and-forget)
   try { db.incrementViews(preview.id); } catch (_) {}
 
+  // Look up theme for this preview
+  const theme = db.getTheme(preview.theme_id || 'xo-default') || db.getTheme('xo-default');
+
   // Force refresh: ?refresh=1 or auto-refresh if stale (>60s)
   const forceRefresh = req.query.refresh === '1';
   const CACHE_TTL_MS = 60 * 1000; // 1 minute
@@ -331,6 +391,7 @@ app.get('/preview/:id', async (req, res) => {
           clientName: '',
           banners: freshData.banners,
           zuuviUrl: preview.zuuvi_url,
+          theme,
         });
         return res.send(html);
       }
@@ -349,6 +410,7 @@ app.get('/preview/:id', async (req, res) => {
       clientName: '',
       banners,
       zuuviUrl: preview.zuuvi_url,
+      theme,
     });
     res.send(html);
 
@@ -404,11 +466,8 @@ function renderPage(page, data = {}, req) {
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 // ── Routes: Hosting ───────────────────────────────────────────────────────────
-const multer = require('multer');
 const AdmZip = require('adm-zip');
 const r2 = require('./lib/r2');
-
-const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 100 * 1024 * 1024 } });
 
 app.get('/hosting', requireAuth, async (req, res) => {
   const campaigns = db.getAllHosted();
