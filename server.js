@@ -273,6 +273,38 @@ app.post('/settings/themes', requireAuth, upload.single('logo'), (req, res) => {
   res.redirect('/settings');
 });
 
+app.get('/settings/themes/:id/edit', requireAuth, (req, res) => {
+  const theme = db.getTheme(req.params.id);
+  if (!theme) return res.redirect('/settings');
+  res.send(renderPage('theme-edit', { theme, error: null }, req));
+});
+
+app.post('/settings/themes/:id/edit', requireAuth, upload.single('logo'), (req, res) => {
+  const theme = db.getTheme(req.params.id);
+  if (!theme) return res.redirect('/settings');
+  const { name, accent_color, bg_color, header_color } = req.body;
+  if (!name || !accent_color || !bg_color || !header_color) {
+    return res.send(renderPage('theme-edit', { theme, error: 'Alle farvefelter er påkrævede.' }, req));
+  }
+  let logo_base64 = undefined;
+  if (req.file) {
+    logo_base64 = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+  }
+  db.updateTheme(req.params.id, { name: name.trim(), accent_color, bg_color, header_color, logo_base64 });
+  res.redirect('/settings');
+});
+
+app.get('/settings/themes/:id/delete/confirm', requireAuth, (req, res) => {
+  const theme = db.getTheme(req.params.id);
+  if (!theme || theme.is_default) return res.redirect('/settings');
+  res.send(renderPage('confirm-delete', {
+    name: theme.name,
+    type: 'theme',
+    deleteUrl: `/settings/themes/${theme.id}/delete`,
+    cancelUrl: '/settings',
+  }, req));
+});
+
 app.post('/settings/themes/:id/delete', requireAuth, (req, res) => {
   const deleted = db.deleteTheme(req.params.id);
   if (!deleted) {
