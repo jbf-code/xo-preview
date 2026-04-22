@@ -41,6 +41,7 @@ app.use(helmet({
       imgSrc: ["'self'", "data:", "https:"],
       fontSrc: ["'self'", "data:", "https://fonts.gstatic.com", "https://cdnjs.cloudflare.com"],
       frameSrc: ["'self'", "https:"],
+      mediaSrc: ["'self'", "https:", "data:", "blob:"],
       connectSrc: ["'self'", "https:"],
     },
   },
