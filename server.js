@@ -644,6 +644,72 @@ app.get('/hosting/:id', requireAuth, async (req, res) => {
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
 
+// ── Get Tags: download .txt with all iframe tags ─────────────────────────────
+app.get('/hosting/:id/get-tags', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send('Not found');
+  const formats = db.getHostedFormats(req.params.id);
+
+  const lines = [];
+  lines.push(campaign.name);
+  lines.push('-'.repeat(campaign.name.length > 31 ? campaign.name.length : 31));
+  lines.push('');
+  for (const f of formats) {
+    lines.push('');
+    lines.push(f.format_name);
+    lines.push('');
+    lines.push(f.tag_html || '');
+    lines.push('');
+  }
+
+  const txt = lines.join('\n');
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_tags.txt`;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(txt);
+});
+
+// ── Get Index Tags: download ZIP with per-format index.html zips ───────────────
+app.get('/hosting/:id/get-index-tags', requireAuth, (req, res) => {
+  const AdmZip = require('adm-zip');
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send('Not found');
+  const formats = db.getHostedFormats(req.params.id);
+
+  const outerZip = new AdmZip();
+
+  for (const f of formats) {
+    const w = f.width || '';
+    const h = f.height || '';
+    const sizeName = f.format_name || `${w}x${h}`;
+
+    const indexHtml = `<!DOCTYPE html>
+<html translate="no">
+<head>
+  <meta charset="UTF-8">
+  <meta name="ad.size" content="width=${w},height=${h}">
+  <style>
+    html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; }
+    iframe { border: 0; display: block; }
+  </style>
+</head>
+<body>
+${f.tag_html || ''}
+</body>
+</html>`;
+
+    const innerZip = new AdmZip();
+    innerZip.addFile('index.html', Buffer.from(indexHtml, 'utf8'));
+
+    outerZip.addFile(`googleCM360/${sizeName}.zip`, innerZip.toBuffer());
+  }
+
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_index_tags.zip`;
+  res.setHeader('Content-Type', 'application/zip');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(outerZip.toBuffer());
+});
+
 // Scan click URLs for a specific campaign (fetch from CDN, parse HTML)
 app.post('/hosting/:id/scan-clicks', requireAuth, async (req, res) => {
   const formats = db.getHostedFormats(req.params.id);
