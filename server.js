@@ -644,6 +644,56 @@ app.get('/hosting/:id', requireAuth, async (req, res) => {
   res.send(renderPage('hosting-detail', { campaign, formats }, req));
 });
 
+// ── Get 3rd Party JS Tags: download .txt with JavaScript ad tags ────────────
+app.get('/hosting/:id/get-js-tags', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send('Not found');
+  const formats = db.getHostedFormats(req.params.id);
+
+  const lines = [];
+  lines.push(campaign.name);
+  lines.push('-'.repeat(Math.max(campaign.name.length, 31)));
+  lines.push('');
+
+  for (const f of formats) {
+    const w = f.width || '';
+    const h = f.height || '';
+    // Build JS tag that dynamically writes the iframe — GAM/3rd party compatible
+    const src = (f.cdn_url || '').replace(/([?&]cachebuster=[^&]*)/, '');
+    const jsTag =
+`<script type="text/javascript">
+(function() {
+  var cb = Math.floor(Math.random() * 99999999999) + 1;
+  var d = document;
+  var ref = d.currentScript || d.scripts[d.scripts.length - 1];
+  var el = d.createElement('iframe');
+  el.src = '${src}?cachebuster=' + cb + '&dfpclick=%%CLICK_URL_ESC%%';
+  el.width = '${w}';
+  el.height = '${h}';
+  el.style.cssText = 'border:none;display:block;overflow:hidden;';
+  el.scrolling = 'no';
+  el.frameBorder = '0';
+  ref.parentNode.insertBefore(el, ref);
+})();
+</script>
+<noscript>
+<iframe src="${src}?cachebuster=1&dfpclick=%%CLICK_URL_ESC%%" width="${w}" height="${h}" frameborder="0" style="border:none;display:block;" scrolling="no"></iframe>
+</noscript>`;
+
+    lines.push('');
+    lines.push(f.format_name);
+    lines.push('');
+    lines.push(jsTag);
+    lines.push('');
+  }
+
+  const txt = lines.join('\n');
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_js_tags.txt`;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(txt);
+});
+
 // ── Get Tags: download .txt with all iframe tags ─────────────────────────────
 app.get('/hosting/:id/get-tags', requireAuth, (req, res) => {
   const campaign = db.getHosted(req.params.id);
