@@ -738,6 +738,9 @@ app.get('/hosting/:id/get-index-tags', requireAuth, (req, res) => {
 <head>
   <meta charset="UTF-8">
   <meta name="ad.size" content="width=${w},height=${h}">
+  <script>
+    var clickTag = "%%CLICK_URL_ESC%%";
+  <\/script>
   <style>
     html, body { margin: 0; padding: 0; overflow: hidden; width: 100%; height: 100%; }
     iframe { border: 0; display: block; }
