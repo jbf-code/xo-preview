@@ -694,14 +694,14 @@ app.get('/hosting/:id/get-js-tags', requireAuth, (req, res) => {
   res.send(txt);
 });
 
-// ── Get CF Tags: Cloudflare-hosted tags (xo-creatives.pages.dev) ──────────
+// ── Get CF Tags: Cloudflare-hosted tags (xo-creatives-cdn.jbf-444.workers.dev) ──────────
 app.get('/hosting/:id/get-cf-tags', requireAuth, (req, res) => {
   const campaign = db.getHosted(req.params.id);
   if (!campaign) return res.status(404).send('Not found');
   const formats = db.getHostedFormats(req.params.id);
   if (!formats.length) return res.status(400).send('No formats');
 
-  const cfBase = 'https://xo-creatives.pages.dev';
+  const cfBase = 'https://xo-creatives-cdn.jbf-444.workers.dev';
   const lines = [];
   for (const f of formats) {
     const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
