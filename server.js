@@ -694,6 +694,36 @@ app.get('/hosting/:id/get-js-tags', requireAuth, (req, res) => {
   res.send(txt);
 });
 
+// ── Get CF Tags: Cloudflare-hosted tags (xo-creatives.pages.dev) ──────────
+app.get('/hosting/:id/get-cf-tags', requireAuth, (req, res) => {
+  const campaign = db.getHosted(req.params.id);
+  if (!campaign) return res.status(404).send('Not found');
+  const formats = db.getHostedFormats(req.params.id);
+  if (!formats.length) return res.status(400).send('No formats');
+
+  const cfBase = 'https://xo-creatives.pages.dev';
+  const lines = [];
+  for (const f of formats) {
+    const cdnBase = process.env.CDN_BASE_URL || 'https://cdn.xo.dk';
+    // Replace cdn base URL with Cloudflare URL
+    const cfUrl = f.cdn_url ? f.cdn_url.replace(cdnBase, cfBase) : null;
+    if (!cfUrl) continue;
+    const w = f.width, h = f.height;
+    const src = cfUrl;
+    lines.push(`<!-- ${f.format_name} ${w}x${h} — Cloudflare hosted -->`);
+    lines.push(`<script type="text/javascript">
+document.write('<iframe src="${src}?cachebuster='+Math.random()+'&dfpclick=%%CLICK_URL_ESC%%" width="${w}" height="${h}" frameborder="0" style="border:none;display:block;" scrolling="no"></iframe>');
+</script>
+<noscript><iframe src="${src}?cachebuster=1&dfpclick=%%CLICK_URL_ESC%%" width="${w}" height="${h}" frameborder="0" style="border:none;display:block;" scrolling="no"></iframe></noscript>`);
+    lines.push('');
+  }
+
+  const filename = `${campaign.name.replace(/[^a-zA-Z0-9_-]/g, '_')}_cf_tags.txt`;
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(lines.join('\n'));
+});
+
 // ── Get Tags: download .txt with all iframe tags ─────────────────────────────
 app.get('/hosting/:id/get-tags', requireAuth, (req, res) => {
   const campaign = db.getHosted(req.params.id);
