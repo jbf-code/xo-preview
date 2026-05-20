@@ -51,6 +51,11 @@ function editMonitor(id) {
   var origName   = nameEl.dataset.val;
   var origTarget = targetEl.dataset.val;
 
+  // Get current secondary values from data attributes
+  var secTargetEl = card.querySelector('.mon-sec-target');
+  var origSecType   = card.dataset.secType || '';
+  var origSecTarget = card.dataset.secTarget || '';
+
   // Replace with inputs
   nameEl.innerHTML   = '<input class="input" style="padding:4px 8px;font-size:14px;font-weight:700;" value="' + escH(origName)   + '" id="edit-name-'   + id + '">';
   targetEl.innerHTML = '<input class="input" style="padding:4px 8px;font-size:11px;font-family:var(--mono);" value="' + escH(origTarget) + '" id="edit-target-' + id + '">';
@@ -62,9 +67,18 @@ function editMonitor(id) {
   if (actions) {
     var bar = document.createElement('div');
     bar.id = 'edit-bar-' + id;
-    bar.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
-    bar.innerHTML = '<button class="btn btn-primary btn-sm" onclick="saveMonitor(' + id + ')">Save</button>'
-      + '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(' + id + ', \'' + escH(origName).replace(/'/g,'') + '\', \'' + escH(origTarget).replace(/'/g,'') + '\')">Cancel</button>';
+    bar.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;padding-top:8px;border-top:1px solid var(--border);';
+    bar.innerHTML = '<div style="grid-column:1/-1;font-size:11px;color:var(--text-3);font-weight:600;text-transform:uppercase;letter-spacing:.05em;">Secondary check (optional)</div>'
+      + '<div><select class="input" id="edit-sec-type-' + id + '" style="padding:4px 8px;font-size:12px;">'
+      + '<option value=""' + (!origSecType ? ' selected' : '') + '>None</option>'
+      + '<option value="http"' + (origSecType === 'http' ? ' selected' : '') + '>HTTP</option>'
+      + '<option value="tcp"'  + (origSecType === 'tcp'  ? ' selected' : '') + '>TCP</option>'
+      + '</select></div>'
+      + '<div><input class="input" id="edit-sec-target-' + id + '" style="padding:4px 8px;font-size:12px;font-family:var(--mono);" value="' + escH(origSecTarget) + '" placeholder="https://... or host:port"></div>'
+      + '<div style="grid-column:1/-1;display:flex;gap:8px;">'
+      + '<button class="btn btn-primary btn-sm" onclick="saveMonitor(' + id + ')">Save</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(' + id + ')">Cancel</button>'
+      + '</div>';
     actions.parentNode.insertBefore(bar, actions.nextSibling);
   }
 
@@ -81,29 +95,36 @@ function editMonitor(id) {
 }
 
 function saveMonitor(id) {
-  var nameInput   = document.getElementById('edit-name-' + id);
-  var targetInput = document.getElementById('edit-target-' + id);
+  var nameInput      = document.getElementById('edit-name-' + id);
+  var targetInput    = document.getElementById('edit-target-' + id);
+  var secTypeInput   = document.getElementById('edit-sec-type-' + id);
+  var secTargetInput = document.getElementById('edit-sec-target-' + id);
   if (!nameInput || !targetInput) return;
 
-  var name   = nameInput.value.trim();
-  var target = targetInput.value.trim();
+  var name      = nameInput.value.trim();
+  var target    = targetInput.value.trim();
+  var secType   = secTypeInput   ? secTypeInput.value   : null;
+  var secTarget = secTargetInput ? secTargetInput.value.trim() : null;
   if (!name || !target) { toast('Name and target required', false); return; }
+  if (secType && !secTarget) { toast('Secondary target required when type is set', false); return; }
 
   fetch('/monitor/api/monitors/' + id, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name, target: target }),
+    body: JSON.stringify({
+      name: name,
+      target: target,
+      secondary_type:   secType   || null,
+      secondary_target: secTarget || null,
+    }),
   }).then(function(r) {
     if (r.ok) { toast('Saved'); setTimeout(refreshMonitors, 300); }
     else { toast('Save failed', false); }
   });
 }
 
-function cancelEdit(id, origName, origTarget) {
-  // Just refresh to restore original state
+function cancelEdit(id) {
   refreshMonitors();
-  var bar = document.getElementById('edit-bar-' + id);
-  if (bar) bar.remove();
 }
 
 function renderCard(m) {
@@ -125,7 +146,25 @@ function renderCard(m) {
     ? '<div style="font-size:11px;color:var(--text-3);margin-bottom:8px;">HTTP ' + m.last.status_code + '</div>'
     : '';
 
-  return '<div class="card mon-card" data-id="' + m.id + '" style="padding:16px 20px;border-left:3px solid ' + borderClr + ';transition:border-color .4s;">'
+  // Secondary check row
+  var secHtml = '';
+  if (m.secondary_target) {
+    var secUp  = m.last && m.last.sec_status === 'up';
+    var secDot = !m.last || !m.last.sec_status ? 'var(--text-3)' : secUp ? '#2ecc71' : '#e74c3c';
+    var secLabel = (m.secondary_type === 'tcp' ? 'TCP' : 'HTTP') + ' → ' + m.secondary_target;
+    var secMs  = m.last && m.last.sec_response_ms ? m.last.sec_response_ms + 'ms' : '';
+    var secErr = m.last && m.last.sec_error ? ' — ' + m.last.sec_error : '';
+    secHtml = '<div style="display:flex;align-items:center;gap:6px;font-size:11px;color:var(--text-3);margin-bottom:8px;border-top:1px solid var(--border);padding-top:8px;">'
+      + '<span style="width:6px;height:6px;border-radius:50%;background:' + secDot + ';flex-shrink:0;"></span>'
+      + '<span style="font-family:var(--mono);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escH(secLabel) + '</span>'
+      + '<span style="color:var(--text-3);flex-shrink:0;">' + secMs + escH(secErr) + '</span>'
+      + '</div>';
+  }
+
+  return '<div class="card mon-card" data-id="' + m.id + '"'
+    + ' data-sec-type="'   + escH(m.secondary_type   || '') + '"'
+    + ' data-sec-target="' + escH(m.secondary_target || '') + '"'
+    + ' style="padding:16px 20px;border-left:3px solid ' + borderClr + ';transition:border-color .4s;">'
     + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">'
     + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotClr + ';flex-shrink:0;' + pulse + ';transition:background .4s;"></span>'
     + '<span class="mon-name" data-val="' + escH(m.name) + '" style="font-size:14px;font-weight:700;color:var(--text);flex:1;">' + escH(m.name) + '</span>'
@@ -139,9 +178,10 @@ function renderCard(m) {
     + stat('Checked',   lastSeenStr(m.last && m.last.checked_at))
     + '</div>'
     + codeHtml + errHtml
+    + secHtml
     + '<div class="mon-actions" style="display:flex;gap:8px;">'
     + '<button class="btn btn-secondary btn-sm" onclick="checkNow(' + m.id + ')">Check now</button>'
-    + '<button class="btn btn-secondary btn-sm mon-edit-btn" onclick="editMonitor(' + m.id + ')" title="Edit name/target">✏️</button>'
+    + '<button class="btn btn-secondary btn-sm mon-edit-btn" onclick="editMonitor(' + m.id + ')" title="Edit">✏️</button>'
     + '<button class="btn btn-danger btn-sm" onclick="delMonitor(' + m.id + ',\'' + escH(m.name).replace(/'/g, '') + '\')">Remove</button>'
     + '</div></div>';
 }
@@ -277,20 +317,24 @@ function delMonitor(id, name) {
 }
 
 function addMonitor() {
-  var n  = document.getElementById('monName').value.trim();
-  var tp = document.getElementById('monType').value;
-  var tg = document.getElementById('monTarget').value.trim();
-  var iv = parseInt(document.getElementById('monInterval').value) || 60;
+  var n         = document.getElementById('monName').value.trim();
+  var tp        = document.getElementById('monType').value;
+  var tg        = document.getElementById('monTarget').value.trim();
+  var iv        = parseInt(document.getElementById('monInterval').value) || 60;
+  var secType   = document.getElementById('monSecType')   ? document.getElementById('monSecType').value   : null;
+  var secTarget = document.getElementById('monSecTarget') ? document.getElementById('monSecTarget').value.trim() : null;
   if (!n || !tg) { toast('Name and target required', false); return; }
+  if (secType && !secTarget) { toast('Secondary target required', false); return; }
   fetch('/monitor/api/monitors', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: n, type: tp, target: tg, interval_sec: iv }),
+    body: JSON.stringify({ name: n, type: tp, target: tg, interval_sec: iv, secondary_type: secType || null, secondary_target: secTarget || null }),
   }).then(function (r) {
     if (r.ok) {
       toast('Monitor added');
       document.getElementById('monName').value = '';
       document.getElementById('monTarget').value = '';
+      if (document.getElementById('monSecTarget')) document.getElementById('monSecTarget').value = '';
       setTimeout(refreshMonitors, 500);
     } else { toast('Failed', false); }
   });

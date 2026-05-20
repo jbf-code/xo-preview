@@ -1307,17 +1307,17 @@ app.get('/monitor/api/monitors', requireAuth, (req, res) => {
 
 // API — add
 app.post('/monitor/api/monitors', requireAuth, express.json(), (req, res) => {
-  const { name, type, target, interval_sec } = req.body || {};
+  const { name, type, target, secondary_type, secondary_target, interval_sec } = req.body || {};
   if (!name || !target) return res.status(400).json({ error: 'name and target required' });
-  const id = monitor.addMonitor({ name, type, target, interval_sec });
+  const id = monitor.addMonitor({ name, type, target, secondary_type, secondary_target, interval_sec });
   res.json({ id });
 });
 
 // API — update (name, target, interval_sec, active)
 app.patch('/monitor/api/monitors/:id', requireAuth, express.json(), (req, res) => {
-  const allowed = ['name', 'type', 'target', 'interval_sec', 'active'];
+  const allowed = ['name', 'type', 'target', 'secondary_type', 'secondary_target', 'interval_sec', 'active'];
   const fields = {};
-  for (const k of allowed) { if (req.body[k] !== undefined) fields[k] = req.body[k]; }
+  for (const k of allowed) { if (req.body[k] !== undefined) fields[k] = req.body[k] || null; }
   if (!Object.keys(fields).length) return res.status(400).json({ error: 'no valid fields' });
   monitor.updateMonitor(parseInt(req.params.id), fields);
   res.json({ ok: true });
