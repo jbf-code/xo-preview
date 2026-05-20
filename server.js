@@ -1290,32 +1290,43 @@ app.post('/hosting/delete/:id', requireAuth, async (req, res) => {
 });
 
 // ── Monitor — Uptime Kuma proxy ──────────────────────────────────────────────
-const { createProxyMiddleware } = require('http-proxy-middleware');
-const UPTIME_KUMA_URL = process.env.UPTIME_KUMA_URL || 'http://uptime-kuma.railway.internal:3001';
+// ── Monitor — built-in uptime monitoring ─────────────────────────────────────
+const monitor = require('./lib/monitor');
+monitor.startScheduler();
 
-// /monitor page (auth-protected, renders loading screen while Kuma boots)
-app.get('/monitor', requireAuth, (req, res, next) => {
-  // Pass-through to proxy — let Uptime Kuma serve its own UI
-  next();
+// Page
+app.get('/monitor', requireAuth, (req, res) => {
+  const pages = require('./lib/pages');
+  const summary = monitor.getMonitorSummary();
+  res.send(pages.monitor(summary, { user: req.session.user, baseUrl: BASE_URL }));
 });
 
-app.use('/monitor', requireAuth, createProxyMiddleware({
-  target: UPTIME_KUMA_URL,
-  changeOrigin: true,
-  // No pathRewrite — Uptime Kuma runs with BASE_PATH=/monitor so paths match
-  ws: true, // WebSocket support (Uptime Kuma uses socket.io)
-  on: {
-    error: (err, req, res) => {
-      console.error('[Monitor proxy error]', err.message);
-      if (res.headersSent) return;
-      const pages = require('./lib/pages');
-      res.status(503).send(pages.error(
-        { message: '⏳ Monitor starter op — prøv igen om 30 sekunder.' },
-        { user: req.session.user, baseUrl: BASE_URL }
-      ));
-    }
-  }
-}));
+// API — list
+app.get('/monitor/api/monitors', requireAuth, (req, res) => {
+  res.json(monitor.getMonitorSummary());
+});
+
+// API — add
+app.post('/monitor/api/monitors', requireAuth, express.json(), (req, res) => {
+  const { name, type, target, interval_sec } = req.body || {};
+  if (!name || !target) return res.status(400).json({ error: 'name and target required' });
+  const id = monitor.addMonitor({ name, type, target, interval_sec });
+  res.json({ id });
+});
+
+// API — delete
+app.delete('/monitor/api/monitors/:id', requireAuth, (req, res) => {
+  monitor.deleteMonitor(parseInt(req.params.id));
+  res.json({ ok: true });
+});
+
+// API — check now
+app.post('/monitor/api/monitors/:id/check', requireAuth, async (req, res) => {
+  const m = monitor.getMonitorById(parseInt(req.params.id));
+  if (!m) return res.status(404).json({ error: 'not found' });
+  const result = await monitor.runCheck(m);
+  res.json(result);
+});
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
