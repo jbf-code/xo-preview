@@ -1297,8 +1297,7 @@ monitor.startScheduler();
 // Page
 app.get('/monitor', requireAuth, (req, res) => {
   const pages = require('./lib/pages');
-  const summary = monitor.getMonitorSummary();
-  res.send(pages.monitor(summary, { user: req.session.user, baseUrl: BASE_URL }));
+  res.send(pages.monitor({ user: req.session.user, baseUrl: BASE_URL }));
 });
 
 // API — list
@@ -1312,6 +1311,16 @@ app.post('/monitor/api/monitors', requireAuth, express.json(), (req, res) => {
   if (!name || !target) return res.status(400).json({ error: 'name and target required' });
   const id = monitor.addMonitor({ name, type, target, interval_sec });
   res.json({ id });
+});
+
+// API — update (name, target, interval_sec, active)
+app.patch('/monitor/api/monitors/:id', requireAuth, express.json(), (req, res) => {
+  const allowed = ['name', 'type', 'target', 'interval_sec', 'active'];
+  const fields = {};
+  for (const k of allowed) { if (req.body[k] !== undefined) fields[k] = req.body[k]; }
+  if (!Object.keys(fields).length) return res.status(400).json({ error: 'no valid fields' });
+  monitor.updateMonitor(parseInt(req.params.id), fields);
+  res.json({ ok: true });
 });
 
 // API — delete

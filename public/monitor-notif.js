@@ -38,6 +38,74 @@ function msStr(v)      { return v === null ? '—' : v + 'ms'; }
 
 /* ── Render monitor card ─────────────────────────────────────────────────── */
 
+/* ── Inline edit ─────────────────────────────────────────────────────────── */
+
+function editMonitor(id) {
+  var card = document.querySelector('.mon-card[data-id="' + id + '"]');
+  if (!card) return;
+
+  var nameEl   = card.querySelector('.mon-name');
+  var targetEl = card.querySelector('.mon-target');
+  if (!nameEl || !targetEl) return;
+
+  var origName   = nameEl.dataset.val;
+  var origTarget = targetEl.dataset.val;
+
+  // Replace with inputs
+  nameEl.innerHTML   = '<input class="input" style="padding:4px 8px;font-size:14px;font-weight:700;" value="' + escH(origName)   + '" id="edit-name-'   + id + '">';
+  targetEl.innerHTML = '<input class="input" style="padding:4px 8px;font-size:11px;font-family:var(--mono);" value="' + escH(origTarget) + '" id="edit-target-' + id + '">';
+
+  // Swap edit button to save+cancel
+  var editBtn = card.querySelector('.mon-edit-btn');
+  if (editBtn) editBtn.style.display = 'none';
+  var actions = card.querySelector('.mon-actions');
+  if (actions) {
+    var bar = document.createElement('div');
+    bar.id = 'edit-bar-' + id;
+    bar.style.cssText = 'display:flex;gap:8px;margin-top:8px;';
+    bar.innerHTML = '<button class="btn btn-primary btn-sm" onclick="saveMonitor(' + id + ')">Save</button>'
+      + '<button class="btn btn-secondary btn-sm" onclick="cancelEdit(' + id + ', \'' + escH(origName).replace(/'/g,'') + '\', \'' + escH(origTarget).replace(/'/g,'') + '\')">Cancel</button>';
+    actions.parentNode.insertBefore(bar, actions.nextSibling);
+  }
+
+  document.getElementById('edit-name-' + id).focus();
+
+  // Save on Enter
+  ['edit-name-' + id, 'edit-target-' + id].forEach(function(elId) {
+    var el = document.getElementById(elId);
+    if (el) el.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') saveMonitor(id);
+      if (e.key === 'Escape') cancelEdit(id, origName, origTarget);
+    });
+  });
+}
+
+function saveMonitor(id) {
+  var nameInput   = document.getElementById('edit-name-' + id);
+  var targetInput = document.getElementById('edit-target-' + id);
+  if (!nameInput || !targetInput) return;
+
+  var name   = nameInput.value.trim();
+  var target = targetInput.value.trim();
+  if (!name || !target) { toast('Name and target required', false); return; }
+
+  fetch('/monitor/api/monitors/' + id, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: name, target: target }),
+  }).then(function(r) {
+    if (r.ok) { toast('Saved'); setTimeout(refreshMonitors, 300); }
+    else { toast('Save failed', false); }
+  });
+}
+
+function cancelEdit(id, origName, origTarget) {
+  // Just refresh to restore original state
+  refreshMonitors();
+  var bar = document.getElementById('edit-bar-' + id);
+  if (bar) bar.remove();
+}
+
 function renderCard(m) {
   var isUp      = m.last && m.last.status === 'up';
   var isDown    = m.last && m.last.status === 'down';
@@ -60,10 +128,10 @@ function renderCard(m) {
   return '<div class="card mon-card" data-id="' + m.id + '" style="padding:16px 20px;border-left:3px solid ' + borderClr + ';transition:border-color .4s;">'
     + '<div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">'
     + '<span style="width:8px;height:8px;border-radius:50%;background:' + dotClr + ';flex-shrink:0;' + pulse + ';transition:background .4s;"></span>'
-    + '<span style="font-size:14px;font-weight:700;color:var(--text);flex:1;">' + escH(m.name) + '</span>'
+    + '<span class="mon-name" data-val="' + escH(m.name) + '" style="font-size:14px;font-weight:700;color:var(--text);flex:1;">' + escH(m.name) + '</span>'
     + '<span style="font-size:11px;font-weight:700;border-radius:20px;padding:2px 10px;' + badgeSt + '">' + badgeTxt + '</span>'
     + '</div>'
-    + '<div style="font-size:11px;color:var(--text-3);margin-bottom:10px;font-family:var(--mono);">' + escH(m.target) + '</div>'
+    + '<div class="mon-target" data-val="' + escH(m.target) + '" style="font-size:11px;color:var(--text-3);margin-bottom:10px;font-family:var(--mono);">' + escH(m.target) + '</div>'
     + '<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px;">'
     + stat('Uptime 24h', uptimeStr(m.uptime24h))
     + stat('Uptime 7d',  uptimeStr(m.uptime7d))
@@ -71,8 +139,9 @@ function renderCard(m) {
     + stat('Checked',   lastSeenStr(m.last && m.last.checked_at))
     + '</div>'
     + codeHtml + errHtml
-    + '<div style="display:flex;gap:8px;">'
+    + '<div class="mon-actions" style="display:flex;gap:8px;">'
     + '<button class="btn btn-secondary btn-sm" onclick="checkNow(' + m.id + ')">Check now</button>'
+    + '<button class="btn btn-secondary btn-sm mon-edit-btn" onclick="editMonitor(' + m.id + ')" title="Edit name/target">✏️</button>'
     + '<button class="btn btn-danger btn-sm" onclick="delMonitor(' + m.id + ',\'' + escH(m.name).replace(/'/g, '') + '\')">Remove</button>'
     + '</div></div>';
 }
