@@ -1302,7 +1302,7 @@ app.get('/monitor', requireAuth, (req, res, next) => {
 app.use('/monitor', requireAuth, createProxyMiddleware({
   target: UPTIME_KUMA_URL,
   changeOrigin: true,
-  pathRewrite: { '^/monitor': '' },
+  // No pathRewrite — Uptime Kuma runs with BASE_PATH=/monitor so paths match
   ws: true, // WebSocket support (Uptime Kuma uses socket.io)
   on: {
     error: (err, req, res) => {
