@@ -1289,6 +1289,34 @@ app.post('/hosting/delete/:id', requireAuth, async (req, res) => {
   res.redirect('/hosting');
 });
 
+// ── Monitor — Uptime Kuma proxy ──────────────────────────────────────────────
+const { createProxyMiddleware } = require('http-proxy-middleware');
+const UPTIME_KUMA_URL = process.env.UPTIME_KUMA_URL || 'http://uptime-kuma.railway.internal:3001';
+
+// /monitor page (auth-protected, renders loading screen while Kuma boots)
+app.get('/monitor', requireAuth, (req, res, next) => {
+  // Pass-through to proxy — let Uptime Kuma serve its own UI
+  next();
+});
+
+app.use('/monitor', requireAuth, createProxyMiddleware({
+  target: UPTIME_KUMA_URL,
+  changeOrigin: true,
+  pathRewrite: { '^/monitor': '' },
+  ws: true, // WebSocket support (Uptime Kuma uses socket.io)
+  on: {
+    error: (err, req, res) => {
+      console.error('[Monitor proxy error]', err.message);
+      if (res.headersSent) return;
+      const pages = require('./lib/pages');
+      res.status(503).send(pages.error(
+        { message: '⏳ Monitor starter op — prøv igen om 30 sekunder.' },
+        { user: req.session.user, baseUrl: BASE_URL }
+      ));
+    }
+  }
+}));
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 XO Studio running at http://localhost:${PORT}\n`);
