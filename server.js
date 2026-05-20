@@ -1328,6 +1328,55 @@ app.post('/monitor/api/monitors/:id/check', requireAuth, async (req, res) => {
   res.json(result);
 });
 
+// ── Notifications API ────────────────────────────────────────────────────────
+const notify = require('./lib/notify');
+
+// Recipients
+app.get('/monitor/api/recipients', requireAuth, (req, res) => {
+  res.json(notify.getRecipients());
+});
+app.post('/monitor/api/recipients', requireAuth, express.json(), (req, res) => {
+  const { name, telegram_chat_id, email } = req.body || {};
+  if (!name) return res.status(400).json({ error: 'name required' });
+  if (!telegram_chat_id && !email) return res.status(400).json({ error: 'telegram_chat_id or email required' });
+  const id = notify.addRecipient({ name, telegram_chat_id, email });
+  res.json({ id });
+});
+app.delete('/monitor/api/recipients/:id', requireAuth, (req, res) => {
+  notify.deleteRecipient(parseInt(req.params.id));
+  res.json({ ok: true });
+});
+
+// Rules
+app.get('/monitor/api/rules', requireAuth, (req, res) => {
+  res.json(notify.getRules());
+});
+app.post('/monitor/api/rules', requireAuth, express.json(), (req, res) => {
+  const { monitor_id, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end } = req.body || {};
+  if (!recipient_id) return res.status(400).json({ error: 'recipient_id required' });
+  const id = notify.addRule({ monitor_id, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end });
+  res.json({ id });
+});
+app.delete('/monitor/api/rules/:id', requireAuth, (req, res) => {
+  notify.deleteRule(parseInt(req.params.id));
+  res.json({ ok: true });
+});
+
+// Test
+app.post('/monitor/api/recipients/:id/test', requireAuth, async (req, res) => {
+  try {
+    const results = await notify.sendTest(parseInt(req.params.id));
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Log
+app.get('/monitor/api/log', requireAuth, (req, res) => {
+  res.json(notify.getNotificationLog(100));
+});
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`\n🚀 XO Studio running at http://localhost:${PORT}\n`);
