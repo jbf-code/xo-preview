@@ -205,6 +205,10 @@ function refreshMonitors() {
       var grid = document.getElementById('monGrid');
       if (!grid) return;
 
+      // Remove initial loading spinner (only present on first render)
+      var loadingEl = document.getElementById('monLoading');
+      if (loadingEl) loadingEl.remove();
+
       // Update status header
       var anyDown = monitors.some(function (m) { return m.last && m.last.status === 'down'; });
       var statusEl = document.getElementById('monStatus');
