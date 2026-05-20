@@ -59,7 +59,14 @@ const loginLimiter = rateLimit({
 // ── Middleware ─────────────────────────────────────────────────────────────────
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    // No caching for JS files — deploy changes must be instant
+    if (filePath.endsWith('.js')) {
+      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+    }
+  }
+}));
 
 app.use(session({
   store: new SQLiteStore({ dir: DATA_DIR, db: 'sessions.sqlite' }),
