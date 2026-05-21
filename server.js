@@ -98,45 +98,44 @@ function requireAuth(req, res, next) {
 // ── Users (from env or defaults) ──────────────────────────────────────────────
 const bcrypt = require('bcryptjs');
 
-function getUsers() {
-  // Format: USER_1=email:bcrypt_hash:name
-  // Or use hashed defaults for dev
+// ── One-time migration: import env/default users into studio_users DB ────────
+function migrateEnvUsersToDb() {
   const defaults = [
     { email: 'jbf@xo.dk', hashedPassword: '$2a$10$yaLqU6uksyyst1JKQoWE4OgDebpGULiDBNrRqE7.fNv9WnwgEjzcK', name: 'JBF' },
     { email: 'cca@xo.dk', hashedPassword: '$2a$10$486kUMYZdf/GOUWinakVIeMmomP6FO3xE6RbfqbZZJjavTE9K/yty', name: 'CCA' },
   ];
-
-  const users = [];
-  // Check env vars (format: email:bcrypt_hash:name)
+  const envUsers = [];
   for (let i = 1; i <= 20; i++) {
     const val = process.env[`USER_${i}`];
-    if (val) {
-      // Split on first two colons only (bcrypt hashes contain $)
-      const firstColon = val.indexOf(':');
-      if (firstColon === -1) continue;
-      const email = val.slice(0, firstColon);
-      const rest = val.slice(firstColon + 1);
-      // Find the last colon for the name (bcrypt hash is between)
-      const lastColon = rest.lastIndexOf(':');
-      let hashedPassword, name;
-      if (lastColon > 0 && rest[lastColon - 1] !== '$') {
-        hashedPassword = rest.slice(0, lastColon);
-        name = rest.slice(lastColon + 1);
-      } else {
-        hashedPassword = rest;
-        name = email.split('@')[0];
-      }
-      if (email && hashedPassword) users.push({ email, hashedPassword, name });
+    if (!val) continue;
+    const firstColon = val.indexOf(':');
+    if (firstColon === -1) continue;
+    const email = val.slice(0, firstColon);
+    const rest = val.slice(firstColon + 1);
+    const lastColon = rest.lastIndexOf(':');
+    let hashedPassword, name;
+    if (lastColon > 0 && rest[lastColon - 1] !== '$') {
+      hashedPassword = rest.slice(0, lastColon);
+      name = rest.slice(lastColon + 1);
+    } else {
+      hashedPassword = rest;
+      name = email.split('@')[0];
+    }
+    if (email && hashedPassword) envUsers.push({ email, hashedPassword, name });
+  }
+  const source = envUsers.length > 0 ? envUsers : defaults;
+  for (const u of source) {
+    if (!db.dbUserExists(u.email)) {
+      db.createDbUser(u.email, u.name, u.hashedPassword);
+      console.log('[users] Migrated to DB:', u.email);
     }
   }
-  // Use defaults only if no env users defined
-  const envUsers = users.length === 0 ? defaults : users;
+}
+migrateEnvUsersToDb();
 
-  // Merge with DB-created users (DB users supplement env users; env takes priority on conflict)
-  const dbUsers = db.getDbUsers().map(u => ({ email: u.email, hashedPassword: u.hashed_password, name: u.name, fromDb: true }));
-  const envEmails = new Set(envUsers.map(u => u.email.toLowerCase()));
-  const merged = [...envUsers, ...dbUsers.filter(u => !envEmails.has(u.email.toLowerCase()))];
-  return merged;
+// All users are now stored in studio_users DB — fully editable and deletable via UI
+function getUsers() {
+  return db.getDbUsers().map(u => ({ email: u.email, hashedPassword: u.hashed_password, name: u.name, fromDb: true }));
 }
 
 // ── Routes: Auth ──────────────────────────────────────────────────────────────
@@ -292,7 +291,9 @@ app.post('/settings/users/create', requireAuth, express.json(), (req, res) => {
 // Delete a DB-created user (env-var users cannot be deleted via UI)
 app.delete('/settings/users/:email', requireAuth, (req, res) => {
   const email = decodeURIComponent(req.params.email);
-  if (!db.dbUserExists(email)) return res.status(400).json({ error: 'Kan ikke slette env-baserede brugere' });
+  // Prevent deleting the currently logged-in user
+  if (req.session.user === email) return res.status(400).json({ error: 'Du kan ikke slette din egen bruger' });
+  if (!db.dbUserExists(email)) return res.status(400).json({ error: 'Bruger ikke fundet' });
   // Cascade: delete alert rules via notification_recipients
   const rec = notify.getRecipientByEmail(email);
   if (rec) notify.deleteRecipient(rec.id); // ON DELETE CASCADE removes rules
@@ -318,7 +319,7 @@ app.put('/settings/users/:email', requireAuth, express.json(), async (req, res) 
       }
       if (Object.keys(updates).length) db.updateDbUser(email, updates);
     } else {
-      if (name || new_email || password) return res.status(400).json({ error: 'Kun Telegram kan \u00e6ndres for env-brugere' });
+      return res.status(400).json({ error: 'Bruger ikke fundet i databasen' });
     }
     // Update telegram for all users (use new email if changed)
     const effectiveEmail = (isDbUser && new_email && new_email !== email) ? new_email : email;
