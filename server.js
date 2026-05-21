@@ -297,6 +297,35 @@ app.delete('/settings/users/:email', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
+app.put('/settings/users/:email', requireAuth, express.json(), async (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  const { name, password, telegram_chat_id } = req.body || {};
+  try {
+    // Update name/password in studio_users (only DB users can change password)
+    if (name || password) {
+      const isDbUser = db.dbUserExists(email);
+      if (password && password.length < 8) return res.status(400).json({ error: 'Password skal være mindst 8 tegn' });
+      if (isDbUser) {
+        const updates = {};
+        if (name) updates.name = name.trim();
+        if (password) updates.hashed_password = require('bcrypt').hashSync(password, 10);
+        db.updateDbUser(email, updates);
+      } else if (name) {
+        // Env users: only allow telegram update (name is set in env)
+        return res.status(400).json({ error: 'Navn kan kun ændres for DB-brugere' });
+      }
+    }
+    // Update telegram for all users
+    if (telegram_chat_id !== undefined) {
+      db.upsertUserSetting(email, 'telegram_chat_id', telegram_chat_id || null);
+      if (telegram_chat_id) notify.upsertUserRecipient(email, name || email, telegram_chat_id);
+    }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── Routes: Themes ──────────────────────────────────────────────────────────────────
 app.get('/settings/themes/new', requireAuth, (req, res) => {
   res.send(renderPage('theme-new', { error: null }, req));
