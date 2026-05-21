@@ -130,8 +130,13 @@ function getUsers() {
     }
   }
   // Use defaults only if no env users defined
-  if (users.length === 0) return defaults;
-  return users;
+  const envUsers = users.length === 0 ? defaults : users;
+
+  // Merge with DB-created users (DB users supplement env users; env takes priority on conflict)
+  const dbUsers = db.getDbUsers().map(u => ({ email: u.email, hashedPassword: u.hashed_password, name: u.name, fromDb: true }));
+  const envEmails = new Set(envUsers.map(u => u.email.toLowerCase()));
+  const merged = [...envUsers, ...dbUsers.filter(u => !envEmails.has(u.email.toLowerCase()))];
+  return merged;
 }
 
 // ── Routes: Auth ──────────────────────────────────────────────────────────────
@@ -241,7 +246,8 @@ app.get('/settings', requireAuth, (req, res) => {
   const users = getUsers().map(u => ({
     name: u.name,
     email: u.email,
-    telegram_chat_id: userSettingsMap[u.email]?.telegram_chat_id || ''
+    telegram_chat_id: userSettingsMap[u.email]?.telegram_chat_id || '',
+    fromDb: !!u.fromDb
   }));
   const previewCount = db.getAllPreviews().length;
   const hostingCount = db.getAllHosted().length;
@@ -264,6 +270,30 @@ app.post('/settings/users/telegram', requireAuth, express.json(), (req, res) => 
   db.setUserTelegram(email, tg);
   // Auto-sync to notification_recipients
   notify.upsertUserRecipient(email, user.name, tg);
+  res.json({ ok: true });
+});
+
+// Create a new DB user
+app.post('/settings/users/create', requireAuth, express.json(), (req, res) => {
+  const { email, name, password } = req.body || {};
+  if (!email || !name || !password) return res.status(400).json({ error: 'email, name og password kræves' });
+  if (password.length < 8) return res.status(400).json({ error: 'Password skal være mindst 8 tegn' });
+  const allUsers = getUsers();
+  if (allUsers.find(u => u.email.toLowerCase() === email.toLowerCase())) {
+    return res.status(409).json({ error: 'Email er allerede i brug' });
+  }
+  const hashed = bcrypt.hashSync(password, 10);
+  db.createDbUser(email.trim(), name.trim(), hashed);
+  // Auto-upsert recipient entry
+  notify.upsertUserRecipient(email.trim(), name.trim(), null);
+  res.json({ ok: true });
+});
+
+// Delete a DB-created user (env-var users cannot be deleted via UI)
+app.delete('/settings/users/:email', requireAuth, (req, res) => {
+  const email = decodeURIComponent(req.params.email);
+  if (!db.dbUserExists(email)) return res.status(400).json({ error: 'Kan ikke slette env-baserede brugere' });
+  db.deleteDbUser(email);
   res.json({ ok: true });
 });
 
