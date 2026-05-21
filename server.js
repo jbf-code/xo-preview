@@ -293,32 +293,40 @@ app.post('/settings/users/create', requireAuth, express.json(), (req, res) => {
 app.delete('/settings/users/:email', requireAuth, (req, res) => {
   const email = decodeURIComponent(req.params.email);
   if (!db.dbUserExists(email)) return res.status(400).json({ error: 'Kan ikke slette env-baserede brugere' });
+  // Cascade: delete alert rules via notification_recipients
+  const rec = notify.getRecipientByEmail(email);
+  if (rec) notify.deleteRecipient(rec.id); // ON DELETE CASCADE removes rules
+  db.deleteUserSetting(email);
   db.deleteDbUser(email);
   res.json({ ok: true });
 });
 
 app.put('/settings/users/:email', requireAuth, express.json(), async (req, res) => {
   const email = decodeURIComponent(req.params.email);
-  const { name, password, telegram_chat_id } = req.body || {};
+  const { name, new_email, password, telegram_chat_id } = req.body || {};
   try {
-    // Update name/password in studio_users (only DB users can change password)
-    if (name || password) {
-      const isDbUser = db.dbUserExists(email);
-      if (password && password.length < 8) return res.status(400).json({ error: 'Password skal være mindst 8 tegn' });
-      if (isDbUser) {
-        const updates = {};
-        if (name) updates.name = name.trim();
-        if (password) updates.hashed_password = require('bcrypt').hashSync(password, 10);
-        db.updateDbUser(email, updates);
-      } else if (name) {
-        // Env users: only allow telegram update (name is set in env)
-        return res.status(400).json({ error: 'Navn kan kun ændres for DB-brugere' });
+    const isDbUser = db.dbUserExists(email);
+    if (password && password.length < 8) return res.status(400).json({ error: 'Password skal v\u00e6re mindst 8 tegn' });
+    if (isDbUser) {
+      const updates = {};
+      if (name) updates.name = name.trim();
+      if (password) updates.hashed_password = require('bcrypt').hashSync(password, 10);
+      if (new_email && new_email !== email) {
+        const allEmails = getUsers().map(u => u.email);
+        if (allEmails.includes(new_email)) return res.status(400).json({ error: 'Email er allerede i brug' });
+        updates.email = new_email.trim();
       }
+      if (Object.keys(updates).length) db.updateDbUser(email, updates);
+    } else {
+      if (name || new_email || password) return res.status(400).json({ error: 'Kun Telegram kan \u00e6ndres for env-brugere' });
     }
-    // Update telegram for all users
+    // Update telegram for all users (use new email if changed)
+    const effectiveEmail = (isDbUser && new_email && new_email !== email) ? new_email : email;
     if (telegram_chat_id !== undefined) {
-      db.upsertUserSetting(email, 'telegram_chat_id', telegram_chat_id || null);
-      if (telegram_chat_id) notify.upsertUserRecipient(email, name || email, telegram_chat_id);
+      db.upsertUserSetting(effectiveEmail, 'telegram_chat_id', telegram_chat_id || null);
+      notify.upsertUserRecipient(effectiveEmail, name || effectiveEmail, telegram_chat_id || null);
+      // If email changed, delete old user_setting
+      if (effectiveEmail !== email) db.deleteUserSetting(email);
     }
     res.json({ ok: true });
   } catch (e) {
