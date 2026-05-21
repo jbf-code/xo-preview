@@ -407,11 +407,13 @@ function loadNotifData() {
     if (rSel) {
       rSel.innerHTML = '<option value="">Vælg bruger...</option>' +
         userRes.map(function (u) {
-          if (u.id && u.telegram_chat_id) {
-            return '<option value="' + u.id + '">' + escH(u.name) + '</option>';
-          } else {
-            return '<option value="" disabled style="color:#666;">' + escH(u.name) + ' (intet telegram)</option>';
-          }
+          if (!u.id) return '';
+          var channels = [];
+          if (u.telegram_chat_id) channels.push('TG');
+          if (u.email) channels.push('Email');
+          var label = channels.length ? ' (' + channels.join('+') + ')' : ' (ingen kanal)';
+          var disabled = channels.length === 0 ? ' disabled style="color:#666;"' : '';
+          return '<option value="' + u.id + '"' + disabled + '>' + escH(u.name) + label + '</option>';
         }).join('');
     }
 
