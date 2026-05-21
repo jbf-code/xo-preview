@@ -1428,9 +1428,11 @@ app.get('/monitor/api/rules', requireAuth, (req, res) => {
   res.json(notify.getRules());
 });
 app.post('/monitor/api/rules', requireAuth, express.json(), (req, res) => {
-  const { monitor_id, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end } = req.body || {};
+  const { monitor_ids, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end } = req.body || {};
   if (!recipient_id) return res.status(400).json({ error: 'recipient_id required' });
-  const id = notify.addRule({ monitor_id, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end });
+  // monitor_ids: [] or null = all monitors, [1,2,3] = specific
+  const ids = Array.isArray(monitor_ids) && monitor_ids.length > 0 ? monitor_ids : null;
+  const id = notify.addRule({ monitor_ids: ids, recipient_id, on_down, on_recovery, cooldown_min, quiet_start, quiet_end });
   res.json({ id });
 });
 app.delete('/monitor/api/rules/:id', requireAuth, (req, res) => {

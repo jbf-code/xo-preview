@@ -358,20 +358,30 @@ function testUser(id) {
 
 function addRule() {
   var rid = parseInt(document.getElementById('rulRecipient').value);
-  var mid = document.getElementById('rulMonitor').value || null;
   var cd  = parseInt(document.getElementById('rulCooldown').value) || 15;
   var qs  = document.getElementById('rulQS').value;
   var qe  = document.getElementById('rulQE').value;
   var od  = document.getElementById('rulDown').checked ? 1 : 0;
   var orv = document.getElementById('rulRecov').checked ? 1 : 0;
   if (!rid) { toast('Vælg en bruger', false); return; }
+
+  // Collect checked monitor IDs
+  var checked = document.querySelectorAll('input[name="rulMonitorCheck"]:checked');
+  var monitorIds = checked.length > 0
+    ? Array.prototype.map.call(checked, function(c) { return parseInt(c.value); })
+    : null; // null = alle
+
   fetch('/monitor/api/rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ recipient_id: rid, monitor_id: mid, cooldown_min: cd, quiet_start: qs, quiet_end: qe, on_down: od, on_recovery: orv }),
+    body: JSON.stringify({ recipient_id: rid, monitor_ids: monitorIds, cooldown_min: cd, quiet_start: qs, quiet_end: qe, on_down: od, on_recovery: orv }),
   }).then(function (r) {
-    if (r.ok) { toast('Rule added'); loadNotifData(); }
-    else { toast('Failed', false); }
+    if (r.ok) {
+      toast('Regel oprettet');
+      // Uncheck all monitors
+      document.querySelectorAll('input[name="rulMonitorCheck"]').forEach(function(c){c.checked=false;});
+      loadNotifData();
+    } else { toast('Fejl', false); }
   });
 }
 
@@ -426,10 +436,14 @@ function loadNotifData() {
         : '<span style="color:var(--text-3);font-size:13px;">Ingen brugere</span>';
     }
 
-    var mSel = document.getElementById('rulMonitor');
-    if (mSel) {
-      mSel.innerHTML = '<option value="">Alle monitors</option>' +
-        monRes.map(function (m) { return '<option value="' + m.id + '">' + escH(m.name) + '</option>'; }).join('');
+    var mChecks = document.getElementById('rulMonitorChecks');
+    if (mChecks) {
+      mChecks.innerHTML = monRes.length
+        ? monRes.map(function (m) {
+          return '<label style="display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--text-2);cursor:pointer;padding:4px 8px;background:var(--surface3);border-radius:4px;">'
+            + '<input type="checkbox" value="' + m.id + '" name="rulMonitorCheck" style="cursor:pointer;"> ' + escH(m.name) + '</label>';
+        }).join('')
+        : '<span style="color:var(--text-3);font-size:13px;">Ingen monitors endnu</span>';
     }
 
     var monMap = {};
@@ -439,16 +453,26 @@ function loadNotifData() {
     if (ruleList) {
       ruleList.innerHTML = ruleRes.length
         ? ruleRes.map(function (r) {
-          var mn = r.monitor_id ? escH(monMap[r.monitor_id] || '?') : 'All';
+          var mn;
+          if (r.monitor_ids) {
+            try {
+              var ids = JSON.parse(r.monitor_ids);
+              mn = ids.map(function(id){ return escH(monMap[id] || '?'); }).join(', ');
+            } catch(e) { mn = r.monitor_ids; }
+          } else if (r.monitor_id) {
+            mn = escH(monMap[r.monitor_id] || '?');
+          } else {
+            mn = 'Alle monitors';
+          }
           var fl = (r.on_down ? ' · DOWN' : '') + (r.on_recovery ? ' · Recovery' : '');
           return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">'
             + '<div><span style="font-size:13px;font-weight:600;color:var(--text);">' + escH(r.recipient_name) + '</span>'
             + ' <span style="color:var(--text-3);font-size:12px;">→ ' + mn + '</span><br>'
             + '<span style="color:var(--text-3);font-size:11px;">Cooldown ' + r.cooldown_min + 'min · Quiet ' + r.quiet_start + '–' + r.quiet_end + fl + '</span></div>'
-            + '<button class="btn btn-danger btn-sm" onclick="delRule(' + r.id + ')">Remove</button>'
+            + '<button class="btn btn-danger btn-sm" onclick="delRule(' + r.id + ')">Fjern</button>'
             + '</div>';
         }).join('')
-        : '<span style="color:var(--text-3);font-size:13px;">No rules yet</span>';
+        : '<span style="color:var(--text-3);font-size:13px;">Ingen regler endnu</span>';
     }
 
     var logEl = document.getElementById('notifLog');
