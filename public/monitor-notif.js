@@ -346,36 +346,13 @@ function addMonitor() {
 
 /* ── Notification actions ────────────────────────────────────────────────── */
 
-function addRecipient() {
-  var name  = document.getElementById('rName').value.trim();
-  var tg    = document.getElementById('rTelegram').value.trim();
-  var email = document.getElementById('rEmail').value.trim();
-  if (!name) { toast('Name required', false); return; }
-  if (!tg && !email) { toast('Telegram or email required', false); return; }
-  fetch('/monitor/api/recipients', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name, telegram_chat_id: tg || null, email: email || null }),
-  }).then(function (r) {
-    if (r.ok) { toast('Recipient added'); loadNotifData(); }
-    else { toast('Failed', false); }
-  });
-}
-
-function delRecipient(id) {
-  if (!confirm('Remove recipient?')) return;
-  fetch('/monitor/api/recipients/' + id, { method: 'DELETE' })
-    .then(function () { toast('Removed'); loadNotifData(); });
-}
-
-function testRecipient(id) {
-  toast('Sending test...');
+function testUser(id) {
+  toast('Sender test...');
   fetch('/monitor/api/recipients/' + id + '/test', { method: 'POST' })
     .then(function (r) { return r.json(); })
     .then(function (d) {
       var ok = d.results && d.results.every(function (x) { return x.ok; });
-      toast(ok ? '✅ Test sent!' : '⚠️ Some failed — check log', ok);
-      setTimeout(loadNotifData, 1500);
+      toast(ok ? '✅ Test sendt!' : '⚠️ Fejl — tjek log', ok);
     });
 }
 
@@ -387,7 +364,7 @@ function addRule() {
   var qe  = document.getElementById('rulQE').value;
   var od  = document.getElementById('rulDown').checked ? 1 : 0;
   var orv = document.getElementById('rulRecov').checked ? 1 : 0;
-  if (!rid) { toast('Select a recipient', false); return; }
+  if (!rid) { toast('Vælg en bruger', false); return; }
   fetch('/monitor/api/rules', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -408,38 +385,45 @@ function delRule(id) {
 
 function loadNotifData() {
   Promise.all([
-    fetch('/monitor/api/recipients').then(function (r) { return r.json(); }),
+    fetch('/monitor/api/users').then(function (r) { return r.json(); }),
     fetch('/monitor/api/rules').then(function (r) { return r.json(); }),
     fetch('/monitor/api/log').then(function (r) { return r.json(); }),
     fetch('/monitor/api/monitors').then(function (r) { return r.json(); }),
   ]).then(function (res) {
-    var recipRes = res[0], ruleRes = res[1], logRes = res[2], monRes = res[3];
+    var userRes = res[0], ruleRes = res[1], logRes = res[2], monRes = res[3];
 
+    // Recipient dropdown for alert rules (only users with telegram)
     var rSel = document.getElementById('rulRecipient');
     if (rSel) {
-      rSel.innerHTML = '<option value="">Select...</option>' +
-        recipRes.map(function (r) { return '<option value="' + r.id + '">' + escH(r.name) + '</option>'; }).join('');
+      var usersWithTg = userRes.filter(function (u) { return u.id && u.telegram_chat_id; });
+      rSel.innerHTML = '<option value="">Vælg...</option>' +
+        usersWithTg.map(function (u) { return '<option value="' + u.id + '">' + escH(u.name) + '</option>'; }).join('');
     }
 
-    var rList = document.getElementById('recipientList');
-    if (rList) {
-      rList.innerHTML = recipRes.length
-        ? recipRes.map(function (r) {
-          var tg = r.telegram_chat_id ? ' <span style="color:var(--text-3);font-size:11px;">· TG: ' + r.telegram_chat_id + '</span>' : '';
-          var em = r.email ? ' <span style="color:var(--text-3);font-size:11px;">· ' + escH(r.email) + '</span>' : '';
+    // Users panel (read-only)
+    var uList = document.getElementById('userList');
+    if (uList) {
+      uList.innerHTML = userRes.length
+        ? userRes.map(function (u) {
+          var tgBadge = u.telegram_chat_id
+            ? '<span style="font-size:11px;color:#2ecc71;background:#2ecc7118;border:1px solid #2ecc7133;border-radius:12px;padding:2px 8px;">TG: ' + escH(u.telegram_chat_id) + '</span>'
+            : '<span style="font-size:11px;color:var(--text-3);">Intet Telegram</span>';
+          var testBtn = u.id && u.telegram_chat_id
+            ? '<button class="btn btn-secondary btn-sm" onclick="testUser(' + u.id + ')">Test</button>'
+            : '';
           return '<div style="display:flex;align-items:center;justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--border);">'
-            + '<div><span style="font-size:13px;font-weight:600;color:var(--text);">' + escH(r.name) + '</span>' + tg + em + '</div>'
-            + '<div style="display:flex;gap:6px;">'
-            + '<button class="btn btn-secondary btn-sm" onclick="testRecipient(' + r.id + ')">Test</button>'
-            + '<button class="btn btn-danger btn-sm" onclick="delRecipient(' + r.id + ')">Remove</button>'
-            + '</div></div>';
+            + '<div><span style="font-size:13px;font-weight:600;color:var(--text);">' + escH(u.name) + '</span>'
+            + ' <span style="color:var(--text-3);font-size:12px;">' + escH(u.email) + '</span><br>'
+            + '<span style="margin-top:4px;display:inline-block;">' + tgBadge + '</span></div>'
+            + testBtn
+            + '</div>';
         }).join('')
-        : '<span style="color:var(--text-3);font-size:13px;">No recipients yet</span>';
+        : '<span style="color:var(--text-3);font-size:13px;">Ingen brugere</span>';
     }
 
     var mSel = document.getElementById('rulMonitor');
     if (mSel) {
-      mSel.innerHTML = '<option value="">All monitors</option>' +
+      mSel.innerHTML = '<option value="">Alle monitors</option>' +
         monRes.map(function (m) { return '<option value="' + m.id + '">' + escH(m.name) + '</option>'; }).join('');
     }
 

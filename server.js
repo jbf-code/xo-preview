@@ -237,7 +237,12 @@ app.get('/api/status/:id', requireAuth, (req, res) => {
 
 // ── Routes: Settings ─────────────────────────────────────────────────────────
 app.get('/settings', requireAuth, (req, res) => {
-  const users = getUsers().map(u => ({ name: u.name, email: u.email }));
+  const userSettingsMap = Object.fromEntries(db.getAllUserSettings().map(s => [s.email, s]));
+  const users = getUsers().map(u => ({
+    name: u.name,
+    email: u.email,
+    telegram_chat_id: userSettingsMap[u.email]?.telegram_chat_id || ''
+  }));
   const previewCount = db.getAllPreviews().length;
   const hostingCount = db.getAllHosted().length;
   const themes = db.getAllThemes();
@@ -247,6 +252,19 @@ app.get('/settings', requireAuth, (req, res) => {
     : req.query.pw === 'short' ? 'Nyt password skal være mindst 8 tegn'
     : null;
   res.send(renderPage('settings', { users, previewCount, hostingCount, passwordChanged, passwordError, themes }, req));
+});
+
+// Save telegram chat ID for a user
+app.post('/settings/users/telegram', requireAuth, express.json(), (req, res) => {
+  const { email, telegram_chat_id } = req.body || {};
+  const users = getUsers();
+  const user = users.find(u => u.email.toLowerCase() === (email || '').toLowerCase());
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  const tg = (telegram_chat_id || '').trim() || null;
+  db.setUserTelegram(email, tg);
+  // Auto-sync to notification_recipients
+  notify.upsertUserRecipient(email, user.name, tg);
+  res.json({ ok: true });
 });
 
 // ── Routes: Themes ──────────────────────────────────────────────────────────────────
@@ -1348,6 +1366,24 @@ app.post('/monitor/api/monitors/:id/check', requireAuth, async (req, res) => {
 const notify = require('./lib/notify');
 
 // Recipients
+// Users with telegram IDs (for alert rules — managed in Settings)
+app.get('/monitor/api/users', requireAuth, (req, res) => {
+  const userSettingsMap = Object.fromEntries(db.getAllUserSettings().map(s => [s.email, s]));
+  const result = getUsers().map(u => {
+    const tg = userSettingsMap[u.email]?.telegram_chat_id || null;
+    // Auto-upsert recipient entry if telegram is set, else look up existing
+    let id = null;
+    if (tg) {
+      id = notify.upsertUserRecipient(u.email, u.name, tg);
+    } else {
+      const existing = notify.getRecipientByEmail(u.email);
+      if (existing) id = existing.id;
+    }
+    return { id, name: u.name, email: u.email, telegram_chat_id: tg };
+  });
+  res.json(result);
+});
+
 app.get('/monitor/api/recipients', requireAuth, (req, res) => {
   res.json(notify.getRecipients());
 });
