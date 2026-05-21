@@ -1371,14 +1371,8 @@ app.get('/monitor/api/users', requireAuth, (req, res) => {
   const userSettingsMap = Object.fromEntries(db.getAllUserSettings().map(s => [s.email, s]));
   const result = getUsers().map(u => {
     const tg = userSettingsMap[u.email]?.telegram_chat_id || null;
-    // Auto-upsert recipient entry if telegram is set, else look up existing
-    let id = null;
-    if (tg) {
-      id = notify.upsertUserRecipient(u.email, u.name, tg);
-    } else {
-      const existing = notify.getRecipientByEmail(u.email);
-      if (existing) id = existing.id;
-    }
+    // Always upsert so every user gets a recipient ID (telegram may be null)
+    const id = notify.upsertUserRecipient(u.email, u.name, tg);
     return { id, name: u.name, email: u.email, telegram_chat_id: tg };
   });
   res.json(result);

@@ -392,12 +392,17 @@ function loadNotifData() {
   ]).then(function (res) {
     var userRes = res[0], ruleRes = res[1], logRes = res[2], monRes = res[3];
 
-    // Recipient dropdown for alert rules (only users with telegram)
+    // Recipient dropdown for alert rules
     var rSel = document.getElementById('rulRecipient');
     if (rSel) {
-      var usersWithTg = userRes.filter(function (u) { return u.id && u.telegram_chat_id; });
-      rSel.innerHTML = '<option value="">Vælg...</option>' +
-        usersWithTg.map(function (u) { return '<option value="' + u.id + '">' + escH(u.name) + '</option>'; }).join('');
+      rSel.innerHTML = '<option value="">Vælg bruger...</option>' +
+        userRes.map(function (u) {
+          if (u.id && u.telegram_chat_id) {
+            return '<option value="' + u.id + '">' + escH(u.name) + '</option>';
+          } else {
+            return '<option value="" disabled style="color:#666;">' + escH(u.name) + ' (intet telegram)</option>';
+          }
+        }).join('');
     }
 
     // Users panel (read-only)
